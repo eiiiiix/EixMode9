@@ -77,6 +77,9 @@ bool CheckWritePermissions(const char* path) {
     } else if (strncasecmp(path, "0:/Nintendo 3DS", 15) == 0) { // this check could be better
         perm = PERM_SDDATA;
         snprintf(area_name, 16, "SD system data");
+    } else if (strncasecmp(path, "0:/em9/Megumin", 15) == 0) {//idk
+        perm = PERM_IDK;
+        snprintf(area_name, 16, "IDK");
     } else if (drvtype & DRV_SDCARD) {
         perm = PERM_SDCARD;
         snprintf(area_name, 16, "SD card");
@@ -172,6 +175,10 @@ bool SetWritePermissions(u32 perm, bool add_perm) {
             break;
         case PERM_SYS_LVL3:
             if (!ShowUnlockSequence(6, "!THIS IS YOUR ONLY WARNING!\n \nYou want to enable SysNAND\nlvl3 writing permissions.\n \nThis enables you to OVERWRITE\n%s", IS_SIGHAX ? "your B9S installation and/or\nBRICK your console!" : IS_A9LH ? "your A9LH installation and/or\nBRICK your console!" : "essential system files and/or\nBRICK your console!"))
+                return false;
+            break;
+        case PERM_IDK:
+            if (!ShowUnlockSequence(1, "Turn the status bar purple."))
                 return false;
             break;
         default:

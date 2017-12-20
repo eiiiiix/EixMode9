@@ -35,7 +35,7 @@
     _Static_assert((__VA_ARGS__), #__VA_ARGS__)
     
 // standard output path (support file paths are in support.h)
-#define OUTPUT_PATH     "0:/gm9/out"
+#define OUTPUT_PATH     "0:/em9/out"
 
 // buffer area defines (in use by godmode.c)
 #define DIR_BUFFER          (0x20000000)
