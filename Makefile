@@ -11,7 +11,7 @@ export VERSION	:=	$(shell git describe --tags --abbrev=8)
 export DBUILTS	:=	$(shell date +'%Y%m%d%H%M%S')
 export DBUILTL  :=	$(shell date +'%Y-%m-%d %H:%M:%S')
 
-export OUTDIR := output
+export OUTDIR := out
 export RELDIR := release
 
 # Definitions for initial RAM disk

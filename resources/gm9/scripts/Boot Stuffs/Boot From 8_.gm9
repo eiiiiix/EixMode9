@@ -1,0 +1,2 @@
+ask "boot Eix.firm from the Bonus Drive? (8:)"
+boot 8:/Eix.firm

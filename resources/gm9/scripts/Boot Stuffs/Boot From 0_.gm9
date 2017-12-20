@@ -1,0 +1,2 @@
+ask "boot Eix.firm from the SDCard/MicroSDCard? (0:)"
+boot 0:/Eix.firm

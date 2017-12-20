@@ -1,0 +1,5 @@
+ask "boot Eix.firm from the Game Cart? (G:)"
+ask "are you sure you want to boot from the Game Cart? (G:)"
+ask "are you aware that the Game Cart (G:) is read only?"
+ask "boot from Game Cart (G:) anyway?"
+boot G:/*.firm

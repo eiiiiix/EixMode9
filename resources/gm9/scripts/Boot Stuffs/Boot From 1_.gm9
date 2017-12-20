@@ -1,0 +1,2 @@
+ask "boot Eix.firm from the SysNAND? (1:)"
+boot 1:/Eix.firm

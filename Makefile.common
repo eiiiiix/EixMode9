@@ -5,7 +5,7 @@ rwildcard = $(foreach d, $(wildcard $1*), \
             $(filter $(subst *, %, $2), $d) \
             $(call rwildcard, $d/, $2))
 
-FLAVOR  ?=  GodMode9
+FLAVOR  ?=  EixMode9
 README  :=  README.md
 SPLASH   =  resources/$(FLAVOR)_splash.pcx
 
@@ -29,6 +29,10 @@ ifeq ($(SALTMODE),1)
     CFLAGS += -DSALTMODE
 endif
 
+ifeq ($(EIXMODE),1)
+    CDLAGS += -DEIXMODE
+endif
+
 ifeq ($(SWITCH_SCREENS),1)
     CFLAGS += -DSWITCH_SCREENS
 endif
@@ -44,10 +48,6 @@ endif
 
 ifeq ($(TIMER_UNLOCK),1)
     CFLAGS += -DTIMER_UNLOCK
-endif
-
-ifeq ($(HIDE_HIDDEN),1)
-    CFLAGS += -DHIDE_HIDDEN
 endif
 
 ifdef FIXED_BRIGHTNESS

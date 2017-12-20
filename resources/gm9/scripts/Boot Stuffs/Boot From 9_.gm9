@@ -1,0 +1,5 @@
+ask "boot Eix.firm from the RamDrive? (9:)"
+ask "are you sure you want to boot from the RamDrive? (9:)"
+ask "are you aware that the RamDrive (9:) clears on boot?"
+ask "boot from RamDrive (9:) anyway?"
+boot 9:/Eix.firm
