@@ -12,30 +12,12 @@
 #include "sha.h"
 #include "hid.h"
 #include "ui.h"
-#include "pcx.h"
 
-
-#define _MAX_ARGS       4
+#define _MAX_ARGS       3
 #define _ARG_MAX_LEN    512
 #define _VAR_CNT_LEN    256
 #define _VAR_NAME_LEN   32
 #define _ERR_STR_LEN    32
-
-#define _CHOICE_STR_LEN 32
-#define _CHOICE_MAX_N   12
-
-#define _CMD_IF         "if"
-#define _CMD_ELIF       "elif"
-#define _CMD_ELSE       "else"
-#define _CMD_END        "end"
-#define _CMD_FOR        "for"
-#define _CMD_NEXT       "next"
-
-#define _ARG_TRUE       "TRUE"
-#define _ARG_FALSE      "FALSE"
-
-#define _SKIP_BLOCK     1
-#define _SKIP_TILL_END  2
 
 #define VAR_BUFFER      (SCRIPT_BUFFER + SCRIPT_BUFFER_SIZE - VAR_BUFFER_SIZE)
 
@@ -47,22 +29,14 @@
 #define TV_NLIN_DISP    (SCREEN_HEIGHT / (FONT_HEIGHT_EXT + (2*TV_VPAD)))
 #define TV_LLEN_DISP    (((SCREEN_WIDTH_TOP - (2*TV_HPAD)) / FONT_WIDTH_EXT) - (TV_LNOS + 1))
 
+
 // some useful macros
 #define IS_WHITESPACE(c)    ((c == ' ') || (c == '\t') || (c == '\r') || (c == '\n'))
-#define MATCH_STR(s,l,c)    ((l == strlen(c)) && (strncmp(s, c, l) == 0))
 #define _FLG(c)             (1 << (c - 'a'))
 
-#define IS_CTRLFLOW_CMD(id) ((id == CMD_ID_IF) || (id == CMD_ID_ELIF) || (id == CMD_ID_ELSE) || (id == CMD_ID_END) || (id == CMD_ID_GOTO) || (id == CMD_ID_LABELSEL))
-
-// command ids (also entry into the cmd_list aray below)
+// command ids
 typedef enum {
     CMD_ID_NONE = 0,
-    CMD_ID_IF,
-    CMD_ID_ELIF,
-    CMD_ID_ELSE,
-    CMD_ID_END,
-    CMD_ID_GOTO,
-    CMD_ID_LABELSEL,
     CMD_ID_ECHO,
     CMD_ID_QR,
     CMD_ID_ASK,
@@ -108,13 +82,6 @@ typedef struct {
 } Gm9ScriptVar;
 
 Gm9ScriptCmd cmd_list[] = {
-    { CMD_ID_NONE    , "#"       , 0, 0 }, // dummy entry
-    { CMD_ID_IF      , _CMD_IF   , 1, 0 }, // control flow commands at the top of the list
-    { CMD_ID_ELIF    , _CMD_ELIF , 1, 0 },
-    { CMD_ID_ELSE    , _CMD_ELSE , 0, 0 },
-    { CMD_ID_END     , _CMD_END  , 0, 0 },
-    { CMD_ID_GOTO    , "goto"    , 1, 0 },
-    { CMD_ID_LABELSEL, "labelsel", 2, 0 },
     { CMD_ID_ECHO    , "echo"    , 1, 0 },
     { CMD_ID_QR      , "qr"      , 2, 0 },
     { CMD_ID_ASK     , "ask"     , 1, 0 },
@@ -152,13 +119,6 @@ static u32 preview_mode = 0; // 0 -> off 1 -> quick 2 -> full
 static u32 script_color_active = 0;
 static u32 script_color_comment = 0;
 static u32 script_color_code = 0;
-
-// global vars for control flow
-static bool syntax_error = false;   // if true, severe error, script has to stop
-static char* jump_ptr = NULL;       // next position after a jump
-static u32 skip_state = 0;          // zero, _SKIP_BLOCK, _SKIP_TILL_END
-static u32 ifcnt = 0;               // current # of 'if' nesting
-
 
 static inline bool strntohex(const char* str, u8* hex, u32 len) {
     if (!len) {
@@ -250,22 +210,11 @@ static inline char* line_seek(const char* text, u32 len, u32 ww, const char* lin
     }
 }
 
-static inline u32 get_lno(const char* text, u32 len, const char* line) {
-    u32 lno = 1;
-    
-    for (u32 i = 0; i < len; i++) {
-        if (line <= text + i) return lno;
-        else if (text[i] == '\n') lno++;
-    }
-    
-    return 0;
-}
-
 void set_preview(const char* name, const char* content) {
     if (strncmp(name, "PREVIEW_MODE", _VAR_NAME_LEN) == 0) {
-        if (strncasecmp(content, "quick", _VAR_CNT_LEN) == 0) preview_mode = 1;
+        if (strncasecmp(content, "off", _VAR_CNT_LEN) == 0) preview_mode = 0;
+        else if (strncasecmp(content, "quick", _VAR_CNT_LEN) == 0) preview_mode = 1;
         else if (strncasecmp(content, "full", _VAR_CNT_LEN) == 0) preview_mode = 2;
-        else preview_mode = 0xFF; // unknown preview mode
     } else if (strncmp(name, "PREVIEW_COLOR_ACTIVE", _VAR_NAME_LEN) == 0) {
         u8 rgb[4] = { 0 };
         if (strntohex(content, rgb, 3))
@@ -316,7 +265,7 @@ void upd_var(const char* name) {
             (FileGetData("1:/rw/sys/SecureInfo_B", secinfo_data, 0x11, 0x100) != 0x11))
             snprintf(env_serial, 0xF, "UNKNOWN");
         else if (*secinfo_data < SMDH_NUM_REGIONS)
-            strncpy(env_region, g_regionNamesShort[*secinfo_data], countof(env_region));
+     	    strncpy(env_region, g_regionNamesShort[*secinfo_data], countof(env_region));
         
         set_var("SERIAL", env_serial);
         set_var("REGION", env_region);
@@ -453,7 +402,7 @@ cmd_id get_cmd_id(char* cmd, u32 len, u32 flags, u32 argc, char* err_str) {
         if (err_str) snprintf(err_str, _ERR_STR_LEN, "unrecognized flags");
     } else return cmd_entry->id;
     
-    return CMD_ID_NONE;
+    return 0;
 }
 
 u32 get_flag(char* str, u32 len, char* err_str) {
@@ -506,96 +455,6 @@ char* get_string(char* ptr, const char* line_end, u32* len, char** next, char* e
     return str;
 }
 
-char* skip_block(char* ptr, bool ignore_else, bool stop_after_end) {
-    while (*ptr) {
-        // store line start / line end
-        char* line_start = ptr;
-        char* line_end = strchr(ptr, '\n');
-        if (!line_end) line_end = ptr + strlen(ptr);
-        
-        // grab first string
-        char* str = NULL;
-        u32 str_len = 0;
-        if (!(str = get_string(ptr, line_end, &str_len, &ptr, NULL)) || (str >= line_end)) {
-            // string error or empty line
-            ptr = line_end + 1;
-            continue; 
-        }
-        
-        // check string
-        if (MATCH_STR(str, str_len, _CMD_END)) { // stop at end
-            return line_start; // end of block found
-        } else if (!ignore_else && MATCH_STR(str, str_len, _CMD_ELSE)) { // stop at else
-            return line_start; // end of block found
-        } else if (!ignore_else && MATCH_STR(str, str_len, _CMD_ELIF)) { // stop at elif
-            return line_start; // end of block found
-        } else if (MATCH_STR(str, str_len, _CMD_IF)) {
-            ptr = line_start = skip_block(line_end + 1, true, false);
-            if (ptr == NULL) return NULL;
-            
-            line_end = strchr(ptr, '\n');
-            if (!line_end) line_end = ptr + strlen(ptr);
-            
-            str = get_string(ptr, line_end, &str_len, &ptr, NULL);
-            if (!(MATCH_STR(str, str_len, _CMD_END))) return NULL;
-            if (stop_after_end) return line_end + 1;
-        }
-        
-        // move on to the next line
-        ptr = line_end + 1;
-    }
-    
-    // end of block not found
-    return NULL;
-}
-
-char* find_label(const char* label, const char* last_found) {
-    char* script = (char*) SCRIPT_BUFFER; // equals global, not a good solution
-    char* ptr = script;
-    
-    if (last_found) {
-        ptr = strchr(last_found, '\n');
-        if (!ptr) return NULL;
-        ptr++;
-    }
-    
-    char* next = ptr;
-    for (; next && *ptr; ptr = next) {
-        // store line start / get line end
-        char* line_start = ptr;
-        char* line_end = strchr(ptr, '\n');
-        if (!line_end) line_end = ptr + strlen(ptr);
-        next = line_end + 1;
-        
-        // search for label
-        char* str = NULL;
-        u32 str_len = 0;
-        if (!(str = get_string(ptr, line_end, &str_len, &ptr, NULL))) continue; // string error, ignore line
-        else if (str >= line_end) continue; // empty line
-        
-        if (*str == '@') {
-            // label found
-            str++; str_len--;
-            
-            // compare it manually (also check for '*' at end)
-            u32 pdiff = 0;
-            for (; (pdiff < str_len) && (label[pdiff] == str[pdiff]); pdiff++);
-            if ((pdiff != str_len) && (label[pdiff] != '*')) continue; // no match
-            // otherwise: potential regular or wildcard match
-            
-            // may be a match, see if there are more strings after it
-            if (!(str = get_string(ptr, line_end, &str_len, &ptr, NULL))) continue; // string error, ignore line
-            else if ((str < line_end) && (*str != '#')) continue; // neither end of line nor comment
-            
-            return line_start; // match found
-        } else if (MATCH_STR(str, str_len, _CMD_IF)) {
-            next = skip_block(line_start, true, true);
-        } // otherwise: irrelevant line
-    }
-    
-    return NULL;
-}
-
 bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32* flags, u32* argc, char** argv, char* err_str) {
     char* ptr = (char*) line_start;
     char* str;
@@ -610,16 +469,7 @@ bool parse_line(const char* line_start, const char* line_end, cmd_id* cmdid, u32
     char* cmd = NULL;
     u32 cmd_len = 0;
     if (!(cmd = get_string(ptr, line_end, &cmd_len, &ptr, err_str))) return false; // string error
-    if ((cmd >= line_end) || (*cmd == '#') || (*cmd == '@')) return true; // empty line or comment or label
-    
-    // special handling for "if" and "elif"
-    if (MATCH_STR(cmd, cmd_len, _CMD_IF)) {
-        *cmdid = CMD_ID_IF;
-        return true;
-    } else if (MATCH_STR(cmd, cmd_len, _CMD_ELIF)) {
-        *cmdid = CMD_ID_ELIF;
-        return true;
-    }
+    if ((cmd >= line_end) || (*cmd == '#')) return true; // empty line or comment
     
     // got cmd, now parse flags & args
     while ((str = get_string(ptr, line_end, &len, &ptr, err_str))) {
@@ -660,98 +510,7 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     }
     
     // perform command
-    if (id == CMD_ID_IF) {
-        // check the argument
-        // "if true" or "if false"
-        skip_state = (strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) ? 0 : _SKIP_BLOCK;
-        ifcnt++;
-        
-        if (syntax_error && err_str)
-            snprintf(err_str, _ERR_STR_LEN, "syntax error after 'if'");
-        ret = !syntax_error;
-    }
-    else if (id == CMD_ID_ELIF) {
-        // check syntax errors
-        if (ifcnt == 0) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'elif' without 'if'");
-            syntax_error = true;
-            return false;
-        }
-        
-        // skip state handling, check the argument if required
-        // "if true" or "if false"
-        skip_state = !skip_state ? _SKIP_TILL_END :
-            ((strncmp(argv[0], _ARG_TRUE, _ARG_MAX_LEN) == 0) ? 0 : _SKIP_BLOCK);
-        
-        if (syntax_error && err_str)
-            snprintf(err_str, _ERR_STR_LEN, "syntax error after 'elif'");
-        ret = !syntax_error;
-    }
-    else if (id == CMD_ID_ELSE) {
-        // check syntax errors
-        if (ifcnt == 0) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'else' without 'if'");
-            syntax_error = true;
-            return false;
-        }
-        
-        // turn the skip state
-        skip_state = skip_state ? 0 : _SKIP_TILL_END;
-        
-        ret = true;
-    }
-    else if (id == CMD_ID_END) {
-        // check syntax errors
-        if (ifcnt == 0){
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "'end' without 'if'");
-            syntax_error = true;
-            return false;
-        }
-        
-        // close last "if"
-        skip_state = 0;
-        ifcnt--;
-        
-        ret = true;
-    }
-    else if (id == CMD_ID_GOTO) {
-        jump_ptr = find_label(argv[0], NULL);
-        if (!jump_ptr) {
-            ret = false;
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "label not found");
-        }
-    }
-    else if (id == CMD_ID_LABELSEL) {
-        const char* options[_CHOICE_MAX_N] = { NULL };
-        char* options_jmp[_CHOICE_MAX_N] = { NULL };
-        char options_str[_CHOICE_MAX_N][_CHOICE_STR_LEN+1];
-        
-        char* ast = strchr(argv[1], '*');
-        char* ptr = NULL;
-        u32 n_opt = 0;
-        while ((ptr = find_label(argv[1], ptr))) {
-            options[n_opt] = options_str[n_opt];
-            options_jmp[n_opt] = ptr;
-            
-            while (*(ptr++) != '@');
-            if (ast) ptr += (ast - argv[1]);
-            
-            char* choice = options_str[n_opt];
-            for (u32 i = 0; i < _CHOICE_STR_LEN; choice[++i] = '\0') {
-                if (IS_WHITESPACE(ptr[i])) break;
-                else if (ptr[i] == '_') choice[i] = ' ';
-                else choice[i] = ptr[i];
-            }
-            if (++n_opt >= _CHOICE_MAX_N) break;
-        }
-        
-        u32 result = ShowSelectPrompt(n_opt, options, argv[0]);
-        if (!result) {
-            ret = false;
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "user abort");
-        } else jump_ptr = options_jmp[result-1];
-    }
-    else if (id == CMD_ID_ECHO) {
+    if (id == CMD_ID_ECHO) {
         ShowPrompt(false, argv[0]);
     }
     else if (id == CMD_ID_QR) {
@@ -1015,12 +774,12 @@ bool run_cmd(cmd_id id, u32 flags, char** argv, char* err_str) {
     return ret;
 }
 
-bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str, bool if_cond) {
+bool run_line(const char* line_start, const char* line_end, u32* flags, char* err_str) {
     char args[_MAX_ARGS][_ARG_MAX_LEN];
     char* argv[_MAX_ARGS];
     u32 argc = 0;
     cmd_id cmdid;
-
+    
     // set up argv array
     for (u32 i = 0; i < _MAX_ARGS; i++)
         argv[i] = args[i];
@@ -1032,40 +791,8 @@ bool run_line(const char* line_start, const char* line_end, u32* flags, char* er
     
     // parse current line, grab cmd / flags / args
     if (!parse_line(line_start, line_end, &cmdid, flags, &argc, argv, err_str)) {
-        syntax_error = true;
-        return false;
-    }
-    
-    // control flow command handling
-    if (IS_CTRLFLOW_CMD(cmdid)) {
-        // block out of control flow commands
-        if (if_cond) {
-            if (err_str) snprintf(err_str, _ERR_STR_LEN, "control flow error");
-            syntax_error = true;
-            return false;
-        }
-        
-        // shortcuts for "elif" / "else"
-        if (((cmdid == CMD_ID_ELIF) || (cmdid == CMD_ID_ELSE)) && !skip_state) {
-            skip_state = _SKIP_TILL_END;
-            cmdid = 0;
-        }
-        
-        // handle "if" / "elif"
-        if ((cmdid == CMD_ID_IF) || (cmdid == CMD_ID_ELIF)) {
-            // set defaults
-            argc = 1;
-            strncpy(argv[0], _ARG_FALSE, _ARG_MAX_LEN);
-            
-            // skip to behind the "if"/"elif" command
-            char* line_start_next = (char*) line_start;
-            for (; IS_WHITESPACE(*line_start_next); line_start_next++);
-            line_start_next += strlen((cmdid == CMD_ID_IF) ? _CMD_IF : _CMD_ELIF);
-            
-            // run condition, take over result
-            if (run_line(line_start_next, line_end, flags, err_str, true))
-                strncpy(argv[0], _ARG_TRUE, _ARG_MAX_LEN);
-        }
+        *flags &= ~(_FLG('o')|_FLG('s')); // parsing errors are never silent or optional
+        return false; 
     }
     
     // run the command (if available)
@@ -1328,13 +1055,6 @@ bool FileTextViewer(const char* path, bool as_script) {
 bool ExecuteGM9Script(const char* path_script) {
     char* script = (char*) SCRIPT_BUFFER;
     char* ptr = script;
-    char path_str[32+1];
-    TruncateString(path_str, path_script, 32, 12);
-    
-    // reset control flow global vars
-    ifcnt = 0;
-    skip_state = 0;
-    syntax_error = false;
     
     // fetch script - if no path is given, assume script already in script buffer
     u32 script_size = (path_script) ? FileGetData(path_script, (u8*) script, SCRIPT_MAX_SIZE, 0) : strnlen(script, SCRIPT_BUFFER_SIZE);
@@ -1357,8 +1077,7 @@ bool ExecuteGM9Script(const char* path_script) {
     }
     
     // script execute loop
-    u32 lno = 1;
-    while (ptr < end) {
+    for (u32 lno = 1; ptr < end; lno++) {
         u32 flags = 0;
         
         // find line end
@@ -1367,33 +1086,21 @@ bool ExecuteGM9Script(const char* path_script) {
         
         // update script viewer
         if (MAIN_SCREEN != TOP_SCREEN) {
+            bool show_preview = preview_mode;
             if (preview_mode != preview_mode_local) {
-                if (!preview_mode || (preview_mode > 2) || !preview_mode_local)
-                    ClearScreen(TOP_SCREEN, COLOR_STD_BG);
-                if (preview_mode > 2) {
-                    char* preview_str = get_var("PREVIEW_MODE", NULL);
-                    u8* pcx = TEMP_BUFFER + TEMP_BUFFER_SIZE / 2;
-                    u32 pcx_size = FileGetData(preview_str, pcx, TEMP_BUFFER_SIZE / 2, 0);
-                    if ((pcx_size > 0) && (pcx_size <  TEMP_BUFFER_SIZE / 2) && 
-                        (PCX_Decompress(TEMP_BUFFER, TEMP_BUFFER_SIZE / 2, pcx, pcx_size))) {
-                        PCXHdr* hdr = (PCXHdr*) (void*) pcx;
-                        DrawBitmap(TOP_SCREEN, -1, -1, PCX_Width(hdr), PCX_Height(hdr), TEMP_BUFFER);
-                    } else {
-                        if (strncmp(preview_str, "off", _VAR_CNT_LEN) == 0) preview_str = "(preview disabled)";
-                        DrawStringCenter(TOP_SCREEN, COLOR_STD_FONT, COLOR_STD_BG, preview_str);
-                    }
-                    preview_mode = 0;
-                }
+                if (!preview_mode || !preview_mode_local) ClearScreen(TOP_SCREEN, COLOR_STD_BG);
+                if (!preview_mode) DrawString(TOP_SCREEN, "(preview disabled)",
+                    (SCREEN_WIDTH_TOP - (18*FONT_WIDTH_EXT)) / 2,
+                    (SCREEN_HEIGHT - FONT_HEIGHT_EXT) / 2,
+                    COLOR_STD_FONT, COLOR_STD_BG);
                 preview_mode_local = preview_mode;
             }
-            
-            bool show_preview = preview_mode;
             if (preview_mode == 1) {
                 show_preview = false;
                 for (char* c = ptr; (c < line_end) && !show_preview; c++) {
-                    // check for comments / labels
+                    // check for comments
                     if (IS_WHITESPACE(*c)) continue;
-                    else if ((*c == '#') || (*c == '@')) break;
+                    else if (*c == '#') break;
                     else show_preview = true;
                 }
             }
@@ -1410,20 +1117,7 @@ bool ExecuteGM9Script(const char* path_script) {
         
         // run command
         char err_str[_ERR_STR_LEN+1] = { 0 };
-        bool result = run_line(ptr, line_end, &flags, err_str, false);
-        
-        // skip state handling
-        char* skip_ptr = ptr;
-        if (skip_state) {
-            skip_ptr = skip_block(line_end + 1, (skip_state == _SKIP_TILL_END), false);
-            if (!skip_ptr) snprintf(err_str, _ERR_STR_LEN, "unclosed conditional");
-        }
-        
-        
-        if (!result) { // error handling
-            if (syntax_error) // severe error, can't continue
-                flags &= ~(_FLG('o')|_FLG('s')); // never silent or optional
-            
+        if (!run_line(ptr, line_end, &flags, err_str)) { // error handling
             if (!(flags & _FLG('s'))) { // not silent
                 if (!*err_str) {
                     char* msg_fail = get_var("ERRORMSG", NULL);
@@ -1438,6 +1132,8 @@ bool ExecuteGM9Script(const char* path_script) {
                     if ((lptr1 > lptr0) && (*(lptr1-1) == '\r')) lptr1--; // handle \r
                     if (lptr1 - lptr0 > 32) snprintf(line_str, 32+1, "%.29s...", lptr0);
                     else snprintf(line_str, 32+1, "%.*s", lptr1 - lptr0, lptr0);
+                    char path_str[32+1];
+                    TruncateString(path_str, path_script, 32, 12);
                     ShowPrompt(false, "%s\nline %lu: %s\n%s", path_str, lno, err_str, line_str);
                 }
             }
@@ -1445,27 +1141,9 @@ bool ExecuteGM9Script(const char* path_script) {
         }
         
         // reposition pointer
-        if (skip_ptr != ptr) {
-            ptr = skip_ptr;
-            lno = get_lno(script, script_size, ptr);
-        } else if (jump_ptr) {
-            ptr = jump_ptr;
-            lno = get_lno(script, script_size, ptr);
-            ifcnt = 0; // jumping into conditional block is unexpected/unsupported
-            jump_ptr = NULL;
-        } else {
-            ptr = line_end + 1;
-            lno++;
-        }
+        ptr = line_end + 1;
     }
     
-    // check for unresolved if here
-    if (ifcnt) {
-        ShowPrompt(false, "%s\nend of script: unresolved 'if'", path_str);
-        return false;
-    }
-    
-    // success message if applicable
     char* msg_okay = get_var("SUCCESSMSG", NULL);
     if (msg_okay && *msg_okay) ShowPrompt(false, msg_okay);
     

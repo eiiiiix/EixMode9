@@ -19,14 +19,13 @@
 #include "i2c.h"
 
 
-#define N_PANES 2
+#define N_PANES 10
 
-#define COLOR_TOP_BAR   (PERM_RED ? COLOR_RED : PERM_ORANGE ? COLOR_ORANGE : PERM_BLUE ? COLOR_BRIGHTBLUE : \
-                         PERM_YELLOW ? COLOR_BRIGHTYELLOW : PERM_GREEN ? COLOR_GREEN : COLOR_WHITE)
+#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_RED : PERM_ORANGE ? COLOR_ORANGE : PERM_BLUE ? COLOR_BRIGHTBLUE : PERM_YELLOW ? COLOR_BRIGHTYELLOW : PERM_GREEN ? COLOR_GREEN : COLOR_WHITE)
 #define COLOR_ENTRY(e)  (((e)->marked) ? COLOR_MARKED : ((e)->type == T_DIR) ? COLOR_DIR : ((e)->type == T_FILE) ? COLOR_FILE : ((e)->type == T_ROOT) ?  COLOR_ROOT : COLOR_GREY)
 
 #define BOOTPAUSE_KEY   (BUTTON_R1|BUTTON_UP)
-#define BOOTMENU_KEY    (BUTTON_R1|BUTTON_LEFT)
+#define BOOTMENU_KEY    BUTTON_X
 #define BOOTFIRM_PATHS  "0:/bootonce.firm", "0:/boot.firm", "1:/boot.firm"
 #define BOOTFIRM_TEMPS  0x1 // bits mark paths as temporary
 
@@ -35,6 +34,11 @@
 #define BOOTMENU_KEY    BUTTON_START
 #endif
 
+#ifdef EIXMODE//my mode :P
+#define BOOTMENU_KEY    BUTTON_X//why wouldnt EixMode be X?
+#define BOOTFIRM_PATHS  "C:/*.firm", "0:/Eix.firm", "1:/Eix.firm", "4:/Eix.firm", "8:/Eix.firm", "2:/Eix.firm", "3:/Eix.firm", "A:/Eix.firm", "5:/Eix.firm", "6:/Eix.firm", "B:/Eix.firm", "9:/Eix.firm", "0:/Megumin.firm", "1:/Megumin.firm", "4:/Megumin.firm", "8:/Megumin.firm", "2:/Megumin.firm", "3:/Megumin.firm", "A:/Megumin.firm", "5:/Megumin.firm", "6:/Megumin.firm", "B:/Megumin.firm", "9:/Megumin.firm", "0:/boot.firm", "1:/boot.firm", "4:/boot.firm", "8:/boot.firm", "2:/boot.firm", "3:/boot.firm", "A:/boot.firm", "5:/boot.firm", "6:/boot.firm", "B:/boot.firm", "9:/boot.firm", "V:/Eix.firm", "V:/Megumin.firm", "V:/boot.firm", "V:/no_firm_detected.firm"//V:/no_firm_detected.firm is just EixMode9 but without the vram
+#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_DARKESTGREY : PERM_ORANGE ? COLOR_DARKESTGREY : PERM_BLUE ? COLOR_DARKESTGREY : PERM_YELLOW ? COLOR_DARKESTGREY : PERM_GREEN ? COLOR_WHITE : COLOR_WHITE)  //not sure if this works
+#endif
 
 typedef struct {
     char path[256];
@@ -42,12 +46,17 @@ typedef struct {
     u32 scroll;
 } PaneData;
 
+// reserve 480kB for DirStruct, 64kB for PaneData, just to be safe
+static DirStruct* current_dir = (DirStruct*) (DIR_BUFFER + 0x00000);
+static DirStruct* clipboard   = (DirStruct*) (DIR_BUFFER + 0x78000);
+static PaneData* panedata     = (PaneData*)  (DIR_BUFFER + 0xF0000);
+
 
 u32 SplashInit(const char* modestr) {
     u64 splash_size;
     u8* splash = FindVTarFileInfo(VRAM0_SPLASH_PCX, &splash_size);
-    const char* namestr = FLAVOR " " VERSION;
-    const char* loadstr = "booting...";
+    const char* namestr = FLAVOR " Version 1.4.4.6-E" VERSION;
+    const char* loadstr = "Weebing...";
     const u32 pos_xb = 10;
     const u32 pos_yb = 10;
     const u32 pos_xu = SCREEN_WIDTH_BOT - 10 - GetDrawStringWidth(loadstr);
@@ -64,21 +73,16 @@ u32 SplashInit(const char* modestr) {
     
     DrawStringF(BOT_SCREEN, pos_xb, pos_yb, COLOR_STD_FONT, COLOR_STD_BG, "%s\n%*.*s\n%s\n \n \n%s\n%s\n \n%s\n%s",
         namestr, strnlen(namestr, 64), strnlen(namestr, 64),
-        "------------------------------", "https://github.com/d0k3/GodMode9",
-        "Releases:", "https://github.com/d0k3/GodMode9/releases/", // this won't fit with a 8px width font
-        "Hourlies:", "https://d0k3.secretalgorithm.com/");
+        "-------------------------------", "https://discord.gg/6mEKUG5",//release name and message should not exceed the line
+        "Mod by:", "Eix",//obviously cuz its named EIX
+        "Best Waifu:", "Megumin");
     DrawStringF(BOT_SCREEN, pos_xu, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, loadstr);
-    DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "built: " DBUILTL);
+    DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "Compiled: " DBUILTL);
     
     return 0;
 }
 
 #ifndef SCRIPT_RUNNER
-// reserve 480kB for DirStruct, 64kB for PaneData, just to be safe
-static DirStruct* current_dir = (DirStruct*) (DIR_BUFFER + 0x00000);
-static DirStruct* clipboard   = (DirStruct*) (DIR_BUFFER + 0x78000);
-static PaneData* panedata     = (PaneData*)  (DIR_BUFFER + 0xF0000);
-
 void GetTimeString(char* timestr, bool forced_update, bool full_year) {
     static DsTime dstime;
     static u64 timer = (u64) -1; // this ensures we don't check the time too often
@@ -94,7 +98,7 @@ void CheckBattery(u32* battery, bool* is_charging) {
     if (battery) {
         static u32 battery_l = 0;
         static u64 timer_b = (u64) -1; // this ensures we don't check too often
-        if ((timer_b == (u64) -1) || (timer_sec(timer_b) >= 120)) {
+        if ((timer_b == (u64) -1) || (timer_sec(timer_b) >= 300)) {
             battery_l = GetBatteryPercent();
             timer_b = timer_start();
         }
@@ -113,9 +117,9 @@ void CheckBattery(u32* battery, bool* is_charging) {
 }
 
 void GenerateBatteryBitmap(u8* bitmap, u32 width, u32 height, u32 color_bg) {
-    const u32 color_outline = COLOR_BLACK;
-    const u32 color_inline = COLOR_LIGHTGREY;
-    const u32 color_inside = COLOR_LIGHTERGREY;
+    const u32 color_outline = COLOR_ORANGE;
+    const u32 color_inline = COLOR_BLACK;
+    const u32 color_inside = COLOR_GREY;
     
     if ((width < 8) || (height < 6)) return;
     
@@ -123,8 +127,8 @@ void GenerateBatteryBitmap(u8* bitmap, u32 width, u32 height, u32 color_bg) {
     bool is_charging;
     CheckBattery(&battery, &is_charging);
     
-    u32 color_battery = (is_charging) ? COLOR_BATTERY_CHARGING :
-        (battery > 70) ? COLOR_BATTERY_FULL : (battery > 30) ? COLOR_BATTERY_MEDIUM : COLOR_BATTERY_LOW;
+    u32 color_battery = (is_charging) ? COLOR_BRIGHTBLUE :
+        (battery > 75) ? COLOR_GREEN : (battery > 50) ? COLOR_YELLOW : (battery > 25) ? COLOR_ORANGE : COLOR_RED;
     u32 nub_size = (height < 12) ? 1 : 2;
     u32 width_inside = width - 4 - nub_size;
     u32 width_battery = (battery >= 100) ? width_inside : ((battery * width_inside) + 50) / 100;
@@ -164,7 +168,7 @@ void DrawTopBar(const char* curr_path) {
         const u32 bartxt_rx = SCREEN_WIDTH_TOP - (19*FONT_WIDTH_EXT) - bartxt_x;
         char bytestr0[32];
         char bytestr1[32];
-        DrawStringF(TOP_SCREEN, bartxt_rx, bartxt_start, COLOR_STD_BG, COLOR_TOP_BAR, "%19.19s", "LOADING...");
+        DrawStringF(TOP_SCREEN, bartxt_rx, bartxt_start, COLOR_STD_BG, COLOR_TOP_BAR, "%19.19s", "Being Slow...");
         FormatBytes(bytestr0, GetFreeSpace(curr_path));
         FormatBytes(bytestr1, GetTotalSpace(curr_path));
         snprintf(tempstr, 64, "%s/%s", bytestr0, bytestr1);
@@ -270,7 +274,7 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
     // bottom: inctruction block
     char instr[512];
     snprintf(instr, 512, "%s\n%s%s%s%s%s%s%s%s",
-        FLAVOR " " VERSION, // generic start part
+        FLAVOR " Version 1.4.4.6-E" VERSION, // generic start part
         (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
         "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
         ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
@@ -335,7 +339,7 @@ u32 SdFormatMenu(void) {
     const char* option_cluster_size[4] = { "Auto", "16KB Clusters", "32KB Clusters", "64KB Clusters" };
     u64 sysnand_size_mb = (((u64)GetNandSizeSectors(NAND_SYSNAND) * 0x200) + 0xFFFFF) / 0x100000;
     u64 sysnand_min_size_mb = (((u64)GetNandMinSizeSectors(NAND_SYSNAND) * 0x200) + 0xFFFFF) / 0x100000;
-    char label[16] = "0:GM9SD";
+    char label[16] = "0:HoloSD";//*weebness intensifys*
     u32 cluster_size = 0;
     u64 sdcard_size_mb = 0;
     u64 emunand_size_mb = (u64) -1;
@@ -942,6 +946,8 @@ u32 FileHandlerMenu(char* current_path, u32* cursor, u32* scroll, PaneData** pan
     bool renamable = (FTYPE_RENAMABLE(filetype));
     bool transferable = (FTYPE_TRANSFERABLE(filetype) && IS_A9LH && (drvtype & DRV_FAT));
     bool hsinjectable = (FTYPE_HASCODE(filetype));
+    bool arinjectable = (FTYPE_HASCODE(filetype));
+    bool hminjectable = (FTYPE_HASCODE(filetype));
     bool extrcodeable = (FTYPE_HASCODE(filetype));
     bool restorable = (FTYPE_RESTORABLE(filetype) && IS_A9LH && !(drvtype & DRV_SYSNAND));
     bool ebackupable = (FTYPE_EBACKUP(filetype));
@@ -964,7 +970,7 @@ u32 FileHandlerMenu(char* current_path, u32* cursor, u32* scroll, PaneData** pan
         extrcodeable = (FTYPE_HASCODE(filetype_cxi));
     }
     
-    bool special_opt = mountable || verificable || decryptable || encryptable || cia_buildable || cia_buildable_legit || cxi_dumpable || tik_buildable || key_buildable || titleinfo || renamable || transferable || hsinjectable || restorable || xorpadable || ebackupable || ncsdfixable || extrcodeable || keyinitable || keyinstallable || bootable || scriptable || installable || agbexportable || agbimportable;
+    bool special_opt = mountable || verificable || decryptable || encryptable || cia_buildable || cia_buildable_legit || cxi_dumpable || tik_buildable || key_buildable || titleinfo || renamable || transferable || hsinjectable || arinjectable || hminjectable || restorable || xorpadable || ebackupable || ncsdfixable || extrcodeable || keyinitable || keyinstallable || bootable || scriptable || installable || agbexportable || agbimportable;
     
     char pathstr[32+1];
     TruncateString(pathstr, file_path, 32, 8);
@@ -1147,6 +1153,8 @@ u32 FileHandlerMenu(char* current_path, u32* cursor, u32* scroll, PaneData** pan
     int verify = (verificable) ? ++n_opt : -1;
     int ctrtransfer = (transferable) ? ++n_opt : -1;
     int hsinject = (hsinjectable) ? ++n_opt : -1;
+    int arinject = (arinjectable) ? ++n_opt : -1;
+    int hminject = (hminjectable) ? ++n_opt : -1;
     int extrcode = (extrcodeable) ? ++n_opt : -1;
     int rename = (renamable) ? ++n_opt : -1;
     int xorpad = (xorpadable) ? ++n_opt : -1;
@@ -1174,6 +1182,8 @@ u32 FileHandlerMenu(char* current_path, u32* cursor, u32* scroll, PaneData** pan
     if (verify > 0) optionstr[verify-1] = "Verify file";
     if (ctrtransfer > 0) optionstr[ctrtransfer-1] = "Transfer image to CTRNAND";
     if (hsinject > 0) optionstr[hsinject-1] = "Inject to H&S";
+    if (arinject > 0) optionstr[arinject-1] = "Inject to AR Games";
+    if (hminject > 0) optionstr [hminject-1] = "Inject to HomeMenu";
     if (rename > 0) optionstr[rename-1] = "Rename file";
     if (xorpad > 0) optionstr[xorpad-1] = "Build XORpads (SD output)";
     if (xorpad_inplace > 0) optionstr[xorpad_inplace-1] = "Build XORpads (inplace)";
@@ -1489,6 +1499,41 @@ u32 FileHandlerMenu(char* current_path, u32* cursor, u32* scroll, PaneData** pan
                 (InjectHealthAndSafety(file_path, destdrv[user_select-1]) == 0) ? "success" : "failed");
         }
         return 0;
+   } else if (user_select == arinject) { // -> Inject to AR Games
+        char* destdrv[2] = { NULL };
+        n_opt = 0;
+        if (DriveType("1:")) {
+            optionstr[n_opt] = "SysNAND AR Games inject";
+            destdrv[n_opt++] = "1:";
+        }
+        if (DriveType("4:")) {
+            optionstr[n_opt] = "EmuNAND AR Games inject";
+            destdrv[n_opt++] = "4:";
+        }
+        user_select = (n_opt > 1) ? (int) ShowSelectPrompt(n_opt, optionstr, pathstr) : n_opt;
+        if (user_select) {
+            ShowPrompt(false, "%s\nAR inject %s", pathstr,
+                (InjectARGames(file_path, destdrv[user_select-1]) == 0) ? "success" : "failed");
+        }
+        return 0;
+    }
+    else if (user_select == hminject) { // -> Inject to HomeMenu system applet
+        char* destdrv[2] = { NULL };
+        n_opt = 0;
+        if (DriveType("1:")) {
+            optionstr[n_opt] = "SysNAND HomeMenu inject";
+            destdrv[n_opt++] = "1:";
+        }
+        if (DriveType("4:")) {
+            optionstr[n_opt] = "EmuNAND HomeMenu inject";
+            destdrv[n_opt++] = "4:";
+        }
+        user_select = (n_opt > 1) ? (int) ShowSelectPrompt(n_opt, optionstr, pathstr) : n_opt;
+        if (user_select) {
+            ShowPrompt(false, "%s\nHM inject %s", pathstr,
+                (InjectHM(file_path, destdrv[user_select-1]) == 0) ? "success" : "failed");
+        }
+        return 0;
     }
     else if (user_select == extrcode) { // -> Extract code
         char extstr[8] = { 0 };
@@ -1611,7 +1656,7 @@ u32 HomeMoreMenu(char* current_path) {
     NandPartitionInfo np_info;
     if (GetNandPartitionInfo(&np_info, NP_TYPE_BONUS, NP_SUBTYPE_CTR, 0, NAND_SYSNAND) != 0) np_info.count = 0;
     
-    const char* optionstr[8];
+    const char* optionstr[11];
     const char* promptstr = "HOME more... menu.\nSelect action:";
     u32 n_opt = 0;
     int sdformat = ++n_opt;
@@ -1619,19 +1664,25 @@ u32 HomeMoreMenu(char* current_path) {
     int multi = (CheckMultiEmuNand()) ? (int) ++n_opt : -1;
     int bsupport = ++n_opt;
     int hsrestore = ((CheckHealthAndSafetyInject("1:") == 0) || (CheckHealthAndSafetyInject("4:") == 0)) ? (int) ++n_opt : -1;
+    int arrestore = ((CheckARGamesInject("1:") == 0) || (CheckARGamesInject("4:") == 0)) ? (int) ++n_opt : -1;
+    int hmrestore = ((CheckHMInject("1:") == 0) || (CheckHMInject("4:") == 0)) ? (int) ++n_opt : -1;
     int clock = ++n_opt;
     int sysinfo = ++n_opt;
     int readme = (FindVTarFileInfo(VRAM0_README_MD, NULL)) ? (int) ++n_opt : -1;
+    int placeholder = ++n_opt;
     
     if (sdformat > 0) optionstr[sdformat - 1] = "SD format menu";
     if (bonus > 0) optionstr[bonus - 1] = "Bonus drive setup";
     if (multi > 0) optionstr[multi - 1] = "Switch EmuNAND";
     if (bsupport > 0) optionstr[bsupport - 1] = "Build support files";
     if (hsrestore > 0) optionstr[hsrestore - 1] = "Restore H&S";
+    if (arrestore > 0) optionstr[arrestore -1] = "Restore AR Games";//thanks CrimsonMaple!
+    if (hmrestore > 0) optionstr[hmrestore -1] = "Restore HomeMenu";//this was one of the first things i was going to add... 12 builds that added or fixed stuff later...
     if (clock > 0) optionstr[clock - 1] = "Set RTC date&time";
     if (sysinfo > 0) optionstr[sysinfo - 1] = "System info";
     if (readme > 0) optionstr[readme - 1] = "Show ReadMe";
-    
+    if (placeholder >0) optionstr[placeholder -1] = "PLACEHOLDER";
+
     int user_select = ShowSelectPrompt(n_opt, optionstr, promptstr);
     if (user_select == sdformat) { // format SD card
         bool sd_state = CheckSDMountState();
@@ -1710,11 +1761,37 @@ u32 HomeMoreMenu(char* current_path) {
         if (sys > 0) optionstr[sys - 1] = "Restore H&S (SysNAND)";
         if (emu > 0) optionstr[emu - 1] = "Restore H&S (EmuNAND)";
         user_select = (n_opt > 1) ? ShowSelectPrompt(n_opt, optionstr, promptstr) : n_opt;
-        if (user_select > 0) {
-            InjectHealthAndSafety(NULL, (user_select == sys) ? "1:" : "4:");
+           if (user_select > 0) {
+           InjectHealthAndSafety(NULL, (user_select == sys) ? "1:" : "4:");
+           GetDirContents(current_dir, current_path);
+           return 0;
+           }
+    }
+       else if (user_select == arrestore) { // restore AR Games
+           n_opt = 0;
+       int sys = (CheckARGamesInject("1:") == 0) ? (int) ++n_opt : -1;
+           int emu = (CheckARGamesInject("4:") == 0) ? (int) ++n_opt : -1;
+           if (sys > 0) optionstr[sys - 1] = "Restore AR Games (SysNAND)";
+        if (emu > 0) optionstr[emu - 1] = "Restore AR Games (EmuNAND)";
+           user_select = (n_opt > 1) ? ShowSelectPrompt(n_opt, optionstr, promptstr) : n_opt;
+           if (user_select > 0) {
+               InjectARGames(NULL, (user_select == sys) ? "1:" : "4:");
+             GetDirContents(current_dir, current_path);
+               return 0;
+           }
+    }
+       else if (user_select == hmrestore) { // restore HomeMenu
+           n_opt = 0;
+        int sys = (CheckHMInject("1:") == 0) ? (int) ++n_opt : -1;
+           int emu = (CheckHMInject("4:") == 0) ? (int) ++n_opt : -1;
+           if (sys > 0) optionstr[sys - 1] = "Restore HomeMenu (SysNAND)";
+        if (emu > 0) optionstr[emu - 1] = "Restore HomeMenh (EmuNAND)";
+           user_select = (n_opt > 1) ? ShowSelectPrompt(n_opt, optionstr, promptstr) : n_opt;
+           if (user_select > 0) {
+               InjectHM(NULL, (user_select == sys) ? "1:" : "4:");
             GetDirContents(current_dir, current_path);
-            return 0;
-        }
+               return 0;
+           }
     }
     else if (user_select == clock) { // RTC clock setter
         DsTime dstime;
@@ -1776,13 +1853,17 @@ u32 GodMode(int entrypoint) {
     // get mode string for splash screen
     const char* disp_mode = NULL;
 	if (bootloader) disp_mode = "bootloader mode\nR+LEFT for menu";
-    else if (!IS_SIGHAX && (entrypoint == ENTRY_NANDBOOT)) disp_mode = "oldloader mode";
-    else if (entrypoint == ENTRY_NTRBOOT) disp_mode = "ntrboot mode";
-    else if (entrypoint == ENTRY_UNKNOWN) disp_mode = "unknown mode";
+    else if (!IS_SIGHAX && (entrypoint == ENTRY_NANDBOOT)) disp_mode = "OldLoader mode";
+    else if (entrypoint == ENTRY_NTRBOOT) disp_mode = "NTRboot mode";
+    else if (entrypoint == ENTRY_UNKNOWN) disp_mode = "Fun mode";
 	
 	bool show_splash = true;
 	#ifdef SALTMODE
     show_splash = !bootloader;
+    #endif
+
+    #ifdef EIXMODE
+    if (bootloader) disp_mode = "bootloader mode\nX for menu";
     #endif
     
 	// show splash screen (if enabled)
