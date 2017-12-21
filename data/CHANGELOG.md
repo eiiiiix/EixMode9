@@ -11,6 +11,13 @@ Entrys with ###### are file changes
 #####
 Pre Releases are uncompiled
 
+##Changelog for 1.4.4.8-E
+*Major bugfix
+*Auto load EixMode9 if no payload is found
+
+##Changelog for 1.4.4.7-E
+*Minor fixes
+
 ###Changelog for 1.4.4.6-E
 *Fixed splash again
 *Removed several build flags
