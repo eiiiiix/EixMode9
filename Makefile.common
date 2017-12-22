@@ -30,7 +30,7 @@ ifeq ($(SALTMODE),1)
 endif
 
 ifeq ($(EIXMODE),1)
-    CDLAGS += -DEIXMODE
+    CFLAGS += -DEIXMODE
 endif
 
 ifeq ($(SWITCH_SCREENS),1)
@@ -61,11 +61,31 @@ endif
 ifdef NTRBOOT
     FTFLAGS  = -S spi-retail
     FTDFLAGS = -S spi-dev
-    FIRM     = $(OUTDIR)/$(FLAVOR)_ntr.firm
-    FIRMD    = $(OUTDIR)/$(FLAVOR)_ntr_dev.firm
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_PEPPERMODE_ntr_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_PEPPERMODE_ntr_dev.firm
+else ifdef EIX
+    FTFLAGS  = -S nand-retail
+    FTDFLAGS = -S nand-dev
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_EIXMODE_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_EIXMODE_dev.firm
+else ifdef EIXNTR
+    FTFLAGS  = -S spi-retail
+    FTDFLAGS = -S spi-dev
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_EIXMODE_ntr_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_EIXMODE_ntr_dev.firm
+else ifdef SALT
+    FTFLAGS  = -S nand-retail
+    FTDFLAGS = -S nand-dev
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_SALTMODE_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_SALTMODE_dev.firm
+else ifdef SALTNTR
+    FTFLAGS  = -S spi-retail
+    FTDFLAGS = -S spi-dev
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_SALTMODE_ntr_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_SALTMODE_ntr_dev.firm
 else
     FTFLAGS  = -S nand-retail
     FTDFLAGS = -S nand-dev
-    FIRM     = $(OUTDIR)/$(FLAVOR).firm
-    FIRMD    = $(OUTDIR)/$(FLAVOR)_dev.firm
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_PEPPERMODE_retail.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_PEPPERMODE_dev.firm
 endif
