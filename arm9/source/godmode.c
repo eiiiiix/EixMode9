@@ -26,7 +26,7 @@
 
 #define BOOTPAUSE_KEY   (BUTTON_R1|BUTTON_UP)
 #define BOOTMENU_KEY    BUTTON_X
-#define BOOTFIRM_PATHS  "0:/bootonce.firm", "0:/boot.firm", "1:/boot.firm"
+#define BOOTFIRM_PATHS  "0:/bootonce.firm", "C:/*.firm", "0:/Eix.firm", "1:/Eix.firm", "4:/Eix.firm", "8:/Eix.firm", "2:/Eix.firm", "3:/Eix.firm", "A:/Eix.firm", "5:/Eix.firm", "6:/Eix.firm", "B:/Eix.firm", "9:/Eix.firm", "0:/Megumin.firm", "1:/Megumin.firm", "4:/Megumin.firm", "8:/Megumin.firm", "2:/Megumin.firm", "3:/Megumin.firm", "A:/Megumin.firm", "5:/Megumin.firm", "6:/Megumin.firm", "B:/Megumin.firm", "9:/Megumin.firm", "0:/boot.firm", "1:/boot.firm", "4:/boot.firm", "8:/boot.firm", "2:/boot.firm", "3:/boot.firm", "A:/boot.firm", "5:/boot.firm", "6:/boot.firm", "B:/boot.firm", "9:/boot.firm"
 #define BOOTFIRM_TEMPS  0x1 // bits mark paths as temporary
 
 #ifdef SALTMODE // ShadowHand's own bootmenu key override
@@ -35,8 +35,6 @@
 #endif
 
 #ifdef EIXMODE//my mode :P
-#define BOOTMENU_KEY    BUTTON_X//why wouldnt EixMode be X?
-#define BOOTFIRM_PATHS  "C:/*.firm", "0:/Eix.firm", "1:/Eix.firm", "4:/Eix.firm", "8:/Eix.firm", "2:/Eix.firm", "3:/Eix.firm", "A:/Eix.firm", "5:/Eix.firm", "6:/Eix.firm", "B:/Eix.firm", "9:/Eix.firm", "0:/Megumin.firm", "1:/Megumin.firm", "4:/Megumin.firm", "8:/Megumin.firm", "2:/Megumin.firm", "3:/Megumin.firm", "A:/Megumin.firm", "5:/Megumin.firm", "6:/Megumin.firm", "B:/Megumin.firm", "9:/Megumin.firm", "0:/boot.firm", "1:/boot.firm", "4:/boot.firm", "8:/boot.firm", "2:/boot.firm", "3:/boot.firm", "A:/boot.firm", "5:/boot.firm", "6:/boot.firm", "B:/boot.firm", "9:/boot.firm"
 #define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_DARKESTGREY : PERM_ORANGE ? COLOR_DARKESTGREY : PERM_BLUE ? COLOR_DARKESTGREY : PERM_YELLOW ? COLOR_DARKESTGREY : PERM_GREEN ? COLOR_WHITE : COLOR_WHITE)  //not sure if this works
 #endif
 
@@ -55,7 +53,7 @@ static PaneData* panedata     = (PaneData*)  (DIR_BUFFER + 0xF0000);
 u32 SplashInit(const char* modestr) {
     u64 splash_size;
     u8* splash = FindVTarFileInfo(VRAM0_SPLASH_PCX, &splash_size);
-    const char* namestr = FLAVOR " Version 1.4.4.8-E" VERSION;
+    const char* namestr = FLAVOR " Version 1.4.4.8.1-E" VERSION;
     const char* loadstr = "Weebing...";
     const u32 pos_xb = 10;
     const u32 pos_yb = 10;
@@ -73,9 +71,9 @@ u32 SplashInit(const char* modestr) {
     
     DrawStringF(BOT_SCREEN, pos_xb, pos_yb, COLOR_STD_FONT, COLOR_STD_BG, "%s\n%*.*s\n%s\n \n \n%s\n%s\n \n%s\n%s",
         namestr, strnlen(namestr, 64), strnlen(namestr, 64),
-        "-------------------------------", "https://discord.gg/6mEKUG5",//release name and message should not exceed the line
+        "---------------------------------", "https://discord.gg/H3Mkktq",//release name and message should not exceed the line
         "Mod by:", "Eix",//obviously cuz its named EIX
-        "Best Waifu:", "Megumin");
+        "Save the earth!", "Protect Earth-chan!");
     DrawStringF(BOT_SCREEN, pos_xu, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, loadstr);
     DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "Compiled: " DBUILTL);
     
@@ -274,7 +272,7 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
     // bottom: inctruction block
     char instr[512];
     snprintf(instr, 512, "%s\n%s%s%s%s%s%s%s%s",
-        FLAVOR " Version 1.4.4.8-E" VERSION, // generic start part
+        FLAVOR " Version 1.4.4.8.1-E" VERSION, // generic start part
         (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
         "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
         ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
@@ -1816,6 +1814,7 @@ u32 HomeMoreMenu(char* current_path) {
         char* README_md = FindVTarFileInfo(VRAM0_README_MD, &README_md_size);
         MemToCViewer(README_md, README_md_size, "GodMode9 ReadMe Table of Contents");
         return 0;
+
     } else return 1;
     
     return HomeMoreMenu(current_path);
@@ -1852,7 +1851,7 @@ u32 GodMode(int entrypoint) {
     
     // get mode string for splash screen
     const char* disp_mode = NULL;
-	if (bootloader) disp_mode = "BootLoader\nX for BootMenu";
+	if (bootloader) disp_mode = "SALTMODE boot key: START\nEIXMODE boot key: X";
     else if (!IS_SIGHAX && (entrypoint == ENTRY_NANDBOOT)) disp_mode = "OldLoader mode";
     else if (entrypoint == ENTRY_NTRBOOT) disp_mode = "NTRboot mode";
     else if (entrypoint == ENTRY_UNKNOWN) disp_mode = "Fun mode";
@@ -1860,10 +1859,11 @@ u32 GodMode(int entrypoint) {
 	bool show_splash = true;
 	#ifdef SALTMODE
     show_splash = !bootloader;
+    if (bootloader) disp_mode = "SALTMODE Bootloader (START)\ndiscord.gg/H3Mkktq"
     #endif
 
     #ifdef EIXMODE
-    if (bootloader) disp_mode = "BootLoader\nX for BootMenu";
+    if (bootloader) disp_mode = "EixMode9 Bootloader (X)\ndiscord.gg/H3Mkktq";
     #endif
     
 	// show splash screen (if enabled)
