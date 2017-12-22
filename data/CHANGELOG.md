@@ -11,32 +11,55 @@ Entrys with ###### are file changes
 #####
 Pre Releases are uncompiled
 
+#####Hello! If your bored why not join my Discord
+server? https://discord.gg/H3Mkktq
+
+#####Expected time for 1.4.4.9-E
+23/12/17 ~12-20:00
+^total guess for most likely time^
+^can be done anytime before      ^
+^also may be later than that date^
+
+###Changelog for 1.4.4.8.1-E
+*Fixed discord link, someone revoked old one -_-
+*Bootloader message thing
+*Simplified stuff for EIXMODE and SALTMODE
+*Key displays being wrong should be fixed permanetly
+*Improvement to system stability and convenience
+
 ###Changelog for 1.4.4.8-E
 *Major bugfix
 *Auto load EixMode9 if no payload is found
+*Improvement to system stability and convenience
 
 ##Changelog for 1.4.4.7-E
 *Minor fixes
+*Improvement to system stability and convenience
 
 ###Changelog for 1.4.4.6-E
 *Fixed splash again
 *Removed several build flags
 *Moved stuff into vram
+*Improvement to system stability and convenience
 
 ##Changelog for 1.4.4.5-E
 *Fix splash?
+*Improvement to system stability and convenience
 
 ##Changelog for 1.4.4.4-E
 *Rebased, some stuff may be missing
+*Improvement to system stability and convenience
 
 ##Changelog for 1.4.4.3-E
 *Fixed nags, i think
+*Improvement to system stability and convenience
 
 ##Changelog for 1.4.4.2-E
 *Fixed a minor derp
 *New buildflags
 *Replace some stuff
 *Added NicoAICPs splash screen :)
+*Improvement to system stability and convenience
 
 ######
 SALTYEIX will build a salt mode eix mode build that works
@@ -45,6 +68,7 @@ TEST just changes some text cuz im lazy
 ##
 Changelog for 1.4.4.1-E
 *Fixed nags?
+*Improvement to system stability and convenience
 
 ##
 Changelog for 1.4.4.0-E
@@ -52,6 +76,7 @@ Changelog for 1.4.4.0-E
 *Bonus drive stuff
 *Reduced splash time
 *Something else but i fell asleep -_-
+*Improvement to system stability and convenience
 
 ###
 Changelog for 1.4.3.16-E
@@ -62,6 +87,7 @@ mainly focused on EIXMODE
 *Added a vram0.img
 *Added SOME of the new stuff thats in GodMode9
 *EIXMODE now loads boot.firm and Eix.firm from any drive
+*Improvement to system stability and convenience
 
 ######
 vram0.img
