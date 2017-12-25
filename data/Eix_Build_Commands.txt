@@ -4,8 +4,9 @@ this is just so i dont have to manually type shit in when its too far back in my
 cd /home/eix/Desktop/GodMode9-master
 export DEVKITARM=/home/eix/Desktop/devkitARM 
 export DEVKITPRO=/home/eix/Desktop/devkitpro 
-make EIXMODE=1 EIX=1 VERSION=
-make EIXMODE=1 EIXNTR=1 VERSION=
-make SALTMODE=1 SALT=1 VERSION=
-make SALTMODE=1 SALTNTR=1 VERSION=
+make EIXMODE=1 VERSION=
+make EIXMODE=1 NTRBOOT=1 VERSION=
+make SALTMODE=1 VERSION=
+make SALTMODE=1 NTRBOOT=1 VERSION=
+make VERSION=
 make NTRBOOT=1 VERSION=
