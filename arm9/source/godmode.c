@@ -21,7 +21,7 @@
 
 #define N_PANES 10
 
-#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_DARKESTGREY : PERM_ORANGE ? COLOR_DARKESTGREY : PERM_BLUE ? COLOR_DARKESTGREY : PERM_YELLOW ? COLOR_DARKESTGREY : PERM_GREEN ? COLOR_WHITE : COLOR_WHITE)  //not sure if this works
+#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_RED : PERM_ORANGE ? COLOR_ORANGE : PERM_BLUE ? COLOR_BRIGHTBLUE : PERM_YELLOW ? COLOR_BRIGHTYELLOW : PERM_GREEN ? COLOR_GREEN : COLOR_WHITE)
 #define COLOR_ENTRY(e)  (((e)->marked) ? COLOR_MARKED : ((e)->type == T_DIR) ? COLOR_DIR : ((e)->type == T_FILE) ? COLOR_FILE : ((e)->type == T_ROOT) ?  COLOR_ROOT : COLOR_GREY)
 
 #define BOOTPAUSE_KEY   (BUTTON_R1|BUTTON_UP)
@@ -35,8 +35,7 @@
 #endif
 
 #ifdef EIXMODE//my mode :P
-#undef BOOTMENU_KEY
-#define BOOTMENU_KEY    BUTTON_HOME
+#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_DARKESTGREY : PERM_ORANGE ? COLOR_DARKESTGREY : PERM_BLUE ? COLOR_DARKESTGREY : PERM_YELLOW ? COLOR_DARKESTGREY : PERM_GREEN ? COLOR_WHITE : COLOR_WHITE)  //not sure if this works
 #endif
 
 typedef struct {
@@ -54,7 +53,7 @@ static PaneData* panedata     = (PaneData*)  (DIR_BUFFER + 0xF0000);
 u32 SplashInit(const char* modestr) {
     u64 splash_size;
     u8* splash = FindVTarFileInfo(VRAM0_SPLASH_PCX, &splash_size);
-    const char* namestr = FLAVOR " Version " VERSION;
+    const char* namestr = FLAVOR " Version 1.4.4.8.1-E" VERSION;
     const char* loadstr = "Weebing...";
     const u32 pos_xb = 10;
     const u32 pos_yb = 10;
@@ -273,7 +272,7 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
     // bottom: inctruction block
     char instr[512];
     snprintf(instr, 512, "%s\n%s%s%s%s%s%s%s%s",
-        FLAVOR " Version " VERSION, // generic start part
+        FLAVOR " Version 1.4.4.8.1-E" VERSION, // generic start part
         (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
         "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
         ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
@@ -1852,7 +1851,7 @@ u32 GodMode(int entrypoint) {
     
     // get mode string for splash screen
     const char* disp_mode = NULL;
-	if (bootloader) disp_mode = "SALTMODE boot key: START\nEIXMODE boot key: HOME\nNormalMode (PEPPERMODE) boot key: X";
+	if (bootloader) disp_mode = "SALTMODE boot key: START\nEIXMODE boot key: X";
     else if (!IS_SIGHAX && (entrypoint == ENTRY_NANDBOOT)) disp_mode = "OldLoader mode";
     else if (entrypoint == ENTRY_NTRBOOT) disp_mode = "NTRboot mode";
     else if (entrypoint == ENTRY_UNKNOWN) disp_mode = "Fun mode";
@@ -1864,9 +1863,9 @@ u32 GodMode(int entrypoint) {
     #endif
 
     #ifdef EIXMODE
-    if (bootloader) disp_mode = "EixMode9 Bootloader (HOME)\ndiscord.gg/H3Mkktq";
+    if (bootloader) disp_mode = "EixMode9 Bootloader (X)\ndiscord.gg/H3Mkktq";
     #endif
-
+    
 	// show splash screen (if enabled)
     ClearScreenF(true, true, COLOR_STD_BG);
     if (show_splash) SplashInit(disp_mode);
@@ -1911,10 +1910,11 @@ u32 GodMode(int entrypoint) {
         ShowPrompt(false, "WARNING:\nNot running from a boot9strap\ncompatible entrypoint. Not\neverything may work as expected.\n \nProvide the recommended\naeskeydb.bin file to make this\nwarning go away.");
     }
     
-    #if defined(EIXMODE)
-    bootmenu = bootmenu || (bootloader && CheckButton(BOOTMENU_KEY)); // second check for boot menu keys
-    #else // standard behaviour
+    #if defined(SALTMODE)
     show_splash = bootmenu = (bootloader && CheckButton(BOOTMENU_KEY));
+    if (show_splash) SplashInit("saltmode");
+    #else // standard behaviour
+    bootmenu = bootmenu || (bootloader && CheckButton(BOOTMENU_KEY)); // second check for boot menu keys
     #endif
     while (CheckButton(BOOTPAUSE_KEY)); // don't continue while these keys is held
     if (show_splash) while (timer_msec( timer ) < 500); // show splash for at least 0.5 sec
@@ -1925,7 +1925,7 @@ u32 GodMode(int entrypoint) {
         while (HID_STATE); // wait until no buttons are pressed
         while (!bootloader && !godmode9) {
             const char* optionstr[6] = { "Resume bootloader", "Resume EixMode9", "Select payload...", "Select script...",
-                "Reboot", "Shutdown" };
+                "Poweroff system", "Reboot system" };
             int user_select = ShowSelectPrompt(6, optionstr, FLAVOR " bootloader menu.\nSelect action:");
             char loadpath[256];
             if (user_select == 1) {
@@ -1937,9 +1937,9 @@ u32 GodMode(int entrypoint) {
             } else if ((user_select == 4) && (FileSelectorSupport(loadpath, "Bootloader scripts menu.\nSelect script:", SCRIPTS_DIR, "*.gm9", true, false))) {
                 ExecuteGM9Script(loadpath);
             } else if (user_select == 5) {
-                exit_mode = GODMODE_EXIT_REBOOT;
-            } else if (user_select == 6) {
                 exit_mode = GODMODE_EXIT_POWEROFF;
+            } else if (user_select == 6) {
+                exit_mode = GODMODE_EXIT_REBOOT;
             } else if (user_select) continue;
             break;
         }
