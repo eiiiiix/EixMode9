@@ -14,38 +14,11 @@ Pre Releases are uncompiled
 #####Hello! If your bored why not join my Discord
 server? https://discord.gg/H3Mkktq
 
-#####Expected time for 1.4.5.0-E
-26/12/17 ~12-20:00 (EST-EixStandardTime UTC+3:15)
+#####Expected time for 1.4.4.9-E
+23/12/17 ~12-20:00
 ^total guess for most likely time^
 ^can be done anytime before      ^
 ^also may be later than that date^
-
-###Changelog for 1.4.5-E
-*AUTOMATED RENAMING!!!
-I DONT CARE IF ITS NOT A BIG THING BUT IT DESERVES TO BE
-1.4.5-E
-I AM LAZY AND THIS IS A HUGE TIME SAVER
-*Fixed future issues with bootkeys forever
-*Switched bootkey to HOME for EIXMODE
-
-####Notes
-building without any flags will give you PEPPERMODE
-EIXMODE+SALTMODE
-building should now be done with
-EIX
-EIXNTR
-SALT
-SALTNTR
-NTRBOOT
-+
-VERSION=
-or just VERSION=
-
-####Changed files
-godmode.c
-Makefile.common
-CHANGELOG.md
-Eix_Build_Commands.txt
 
 ###Changelog for 1.4.4.8.1-E
 *Fixed discord link, someone revoked old one -_-
