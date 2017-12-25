@@ -53,7 +53,7 @@ static PaneData* panedata     = (PaneData*)  (DIR_BUFFER + 0xF0000);
 u32 SplashInit(const char* modestr) {
     u64 splash_size;
     u8* splash = FindVTarFileInfo(VRAM0_SPLASH_PCX, &splash_size);
-    const char* namestr = FLAVOR " Version 1.4.4.8.1-E" VERSION;
+    const char* namestr = FLAVOR " Version " VERSION;
     const char* loadstr = "Weebing...";
     const u32 pos_xb = 10;
     const u32 pos_yb = 10;
@@ -272,7 +272,7 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
     // bottom: inctruction block
     char instr[512];
     snprintf(instr, 512, "%s\n%s%s%s%s%s%s%s%s",
-        FLAVOR " Version 1.4.4.8.1-E" VERSION, // generic start part
+        FLAVOR " Version " VERSION, // generic start part
         (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
         "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
         ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
