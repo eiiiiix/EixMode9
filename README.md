@@ -4,7 +4,7 @@ For the GodMode9 readme, please visit the GodMode9 repo.
 
 ## Scripts
 
-__GodMode9 has commands that EixMode9 does not have__
+__GodMode9 has commands that EixMode9 does not have.__
 Please only use scripts that are compatable with GodMode9 1.4.2
 
 ## vram
