@@ -38,6 +38,9 @@ clean:
 	    $(MAKE) --no-print-directory -C $$(dirname $$elf) clean; \
 	done
 	@rm -rf $(OUTDIR) $(RELDIR) $(FIRM) $(FIRMD) $(VRAM_OUT)
+	@echo "Done!"
+	@echo "Make sure to join my Discord server!"
+	@echo "https://discord.gg/fQ8PFHR"
 
 release: clean
 	@$(MAKE) --no-print-directory firm
@@ -75,6 +78,6 @@ firm: elf vram0
 	@mkdir -p $(call dirname,"$(FIRM)") $(call dirname,"$(FIRMD)")
 	firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
 	firmtool build $(FIRMD) $(FTDFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT)  -C NDMA XDMA memcpy
-@echo "Done!"
-@echo "Make sure to join my Discord Server!"
-@echo "https://discord.gg/fQ8PFHR"
+	@echo "Done!"
+	@echo "Make sure to join my Discord server!"
+	@echo "https://discord.gg/fQ8PFHR"
