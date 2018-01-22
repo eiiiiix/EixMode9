@@ -75,3 +75,6 @@ firm: elf vram0
 	@mkdir -p $(call dirname,"$(FIRM)") $(call dirname,"$(FIRMD)")
 	firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
 	firmtool build $(FIRMD) $(FTDFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT)  -C NDMA XDMA memcpy
+@echo "Done!"
+@echo "Make sure to join my Discord Server!"
+@echo "https://discord.gg/fQ8PFHR"
