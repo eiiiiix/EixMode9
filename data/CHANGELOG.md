@@ -19,6 +19,10 @@ server? https://discord.gg/H3Mkktq
 ^total guess for most likely time^
 ^can be done anytime before      ^
 ^also may be later than that date^
+^WAY off                         ^
+
+###Changelog for 1.4.4.9-E
+*Improvements
 
 ###Changelog for 1.4.4.8.1-E
 *Fixed discord link, someone revoked old one -_-
