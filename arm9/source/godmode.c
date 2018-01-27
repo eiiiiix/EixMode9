@@ -2037,7 +2037,6 @@ u32 GodMode(int entrypoint) {
                         scroll = 0;
                     }
                 } else if (user_select == fixcmac) {
-                    ShowString("%s\nFixing CMACs for drive...", namestr);
                     RecursiveFixFileCmac(curr_entry->path);
                 } else if (user_select == dirnfo) {
                     bool is_drive = (!*current_path);
