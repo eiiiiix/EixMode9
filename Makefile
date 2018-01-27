@@ -67,13 +67,11 @@ vram0:
 	@echo "Creating $(VRAM_OUT)"
 	@tar cf $(VRAM_OUT) $(VRAM_FLAGS) $(shell ls -d $(README) $(SPLASH) $(VRAM_DATA)/*)
 
-elf:
-	@set -e; for elf in $(ELF); do \
-		echo "Building $$elf"; \
-		$(MAKE) --no-print-directory -C $$(dirname $$elf); \
-	done
+%.elf: .FORCE
+	@echo "Building $@"
+	@$(MAKE) --no-print-directory -C $(@D)
 
-firm: elf vram0
+firm: $(ELF) vram0
 	@test `wc -c <$(VRAM_OUT)` -le 3145728
 	@mkdir -p $(call dirname,"$(FIRM)") $(call dirname,"$(FIRMD)")
 	firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
@@ -81,3 +79,5 @@ firm: elf vram0
 	@echo "Done!"
 	@echo "Make sure to join my Discord server!"
 	@echo "https://discord.gg/fQ8PFHR"
+
+.FORCE:
