@@ -72,8 +72,7 @@ u32 SplashInit(const char* modestr) {
     DrawStringF(BOT_SCREEN, pos_xb, pos_yb, COLOR_STD_FONT, COLOR_STD_BG, "%s\n%*.*s\n%s\n \n \n%s\n%s\n \n%s\n%s",
         namestr, strnlen(namestr, 64), strnlen(namestr, 64),
         "---------------------------------", "https://discord.gg/H3Mkktq",//release name and message should not exceed the line
-        "Mod by:", "Eix",//obviously cuz its named EIX
-        "Save the earth!", "Protect Earth-chan!");
+        "Mod by:", "Eix");
     DrawStringF(BOT_SCREEN, pos_xu, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, loadstr);
     DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "Compiled: " DBUILTL);
     
@@ -1894,7 +1893,7 @@ u32 GodMode(int entrypoint) {
     }
     
     // check internal clock
-    if (IS_SIGHAX) { // we could actually do this on any entrypoint
+    if (!IS_NTRBOOT) { // we could actually do this on any entrypoint
         DsTime dstime;
         get_dstime(&dstime);
         if ((DSTIMEGET(&dstime, bcd_Y) < 17) &&
@@ -1927,7 +1926,7 @@ u32 GodMode(int entrypoint) {
         while (HID_STATE); // wait until no buttons are pressed
         while (!bootloader && !godmode9) {
             const char* optionstr[6] = { "Resume EixMode9", "Resume bootloader", "Select payload...", "Select script...",
-                "Poweroff system", "Reboot system" };
+                "Poweroff system"};
             int user_select = ShowSelectPrompt(6, optionstr, FLAVOR " bootloader menu.\nSelect action:");
             char loadpath[256];
             if (user_select == 1) {
@@ -1940,8 +1939,6 @@ u32 GodMode(int entrypoint) {
                 ExecuteGM9Script(loadpath);
             } else if (user_select == 5) {
                 exit_mode = GODMODE_EXIT_POWEROFF;
-            } else if (user_select == 6) {
-                exit_mode = GODMODE_EXIT_REBOOT;
             } else if (user_select) continue;
             break;
         }
