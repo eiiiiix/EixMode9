@@ -1893,7 +1893,7 @@ u32 GodMode(int entrypoint) {
     }
     
     // check internal clock
-    if (!IS_NTRBOOT) { // we could actually do this on any entrypoint
+    if (IS_SIGHAX) { // we could actually do this on any entrypoint
         DsTime dstime;
         get_dstime(&dstime);
         if ((DSTIMEGET(&dstime, bcd_Y) < 17) &&
