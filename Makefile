@@ -59,7 +59,7 @@ release: clean
 	@cp $(CURDIR)/README.md $(RELDIR)
 	@cp $(CURDIR)/HelloScript.gm9 $(RELDIR)
 	@cp -R $(CURDIR)/resources/em9 $(RELDIR)/em9
-	@cp -R $(CURDIR)/resources/download_support.sh $(RELDER)/download_support.sh
+	@cp -R $(CURDIR)/resources/download_support.sh $(RELDIR)/download_support.sh
 
 	@-7za a $(RELDIR)/$(FLAVOR)-$(VERSION)-$(DBUILTS).zip ./$(RELDIR)/*
 
