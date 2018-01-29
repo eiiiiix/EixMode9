@@ -11,54 +11,68 @@ Entrys with ###### are file changes
 #####
 Pre Releases are uncompiled
 
-#####Hello! If your bored why not join my Discord
+#####
+Hello! If your bored why not join my Discord
 server? https://discord.gg/H3Mkktq
 
-#####Expected time for 1.4.4.9-E
+#####
+Expected time for 1.4.4.9-E
 23/12/17 ~12-20:00
 ^total guess for most likely time^
 ^can be done anytime before      ^
 ^also may be later than that date^
 ^WAY off                         ^
 
-###Changelog for 1.4.4.9-E
+###
+Changelog for 1.4.4.9-E
 *Improvements
+*LOTS of stuffs
+*SirNapkin is now a maintainer (ignore my spelling)
+*Improvement to system stability and convenience
 
-###Changelog for 1.4.4.8.1-E
+###
+Changelog for 1.4.4.8.1-E
 *Fixed discord link, someone revoked old one -_-
 *Bootloader message thing
 *Simplified stuff for EIXMODE and SALTMODE
 *Key displays being wrong should be fixed permanetly
 *Improvement to system stability and convenience
 
-###Changelog for 1.4.4.8-E
+###
+Changelog for 1.4.4.8-E
 *Major bugfix
 *Auto load EixMode9 if no payload is found
 *Improvement to system stability and convenience
 
-##Changelog for 1.4.4.7-E
+##
+Changelog for 1.4.4.7-E
 *Minor fixes
 *Improvement to system stability and convenience
 
-###Changelog for 1.4.4.6-E
+###
+Changelog for 1.4.4.6-E
 *Fixed splash again
 *Removed several build flags
 *Moved stuff into vram
 *Improvement to system stability and convenience
 
-##Changelog for 1.4.4.5-E
+##
+Changelog for 1.4.4.5-E
 *Fix splash?
 *Improvement to system stability and convenience
 
-##Changelog for 1.4.4.4-E
+##
+Changelog for 1.4.4.4-E
 *Rebased, some stuff may be missing
 *Improvement to system stability and convenience
 
-##Changelog for 1.4.4.3-E
+##
+Changelog for 1.4.4.3-E
 *Fixed nags, i think
 *Improvement to system stability and convenience
 
-##Changelog for 1.4.4.2-E
+##
+Changelog for 1.4.4.2-E
 *Fixed a minor derp
 *New buildflags
 *Replace some stuff
