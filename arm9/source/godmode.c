@@ -72,8 +72,7 @@ u32 SplashInit(const char* modestr) {
     DrawStringF(BOT_SCREEN, pos_xb, pos_yb, COLOR_STD_FONT, COLOR_STD_BG, "%s\n%*.*s\n%s\n \n \n%s\n%s\n \n%s\n%s",
         namestr, strnlen(namestr, 64), strnlen(namestr, 64),
         "---------------------------------", "https://discord.gg/H3Mkktq",//release name and message should not exceed the line
-        "Mod by:", "Eix",//obviously cuz its named EIX
-        "Save the earth!", "Protect Earth-chan!");
+        "Mod by:", "Eix");
     DrawStringF(BOT_SCREEN, pos_xu, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, loadstr);
     DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "Compiled: " DBUILTL);
     
@@ -363,7 +362,7 @@ u32 SdFormatMenu(void) {
     if (!user_select) return 1;
     else cluster_size = cluster_size_table[user_select];
     
-    if (!ShowStringPrompt(label + 2, 9, "Format SD card (%lluMB)?\nEnter label:", sdcard_size_mb))
+    if (!ShowStringPrompt(label + 2, 11 + 1, "Format SD card (%lluMB)?\nEnter label:", sdcard_size_mb))
         return 1;
     
     if (!FormatSDCard(emunand_size_mb, cluster_size, label)) {
@@ -393,7 +392,7 @@ u32 SdFormatMenu(void) {
 }
 
 u32 FileHexViewer(const char* path) {
-    static const u32 max_data = (SCREEN_HEIGHT / 8) * 16;
+    const u32 max_data = (SCREEN_HEIGHT / FONT_HEIGHT_EXT) * 16 * ((FONT_WIDTH_EXT > 4) ? 1 : 2);
     static u32 mode = 0;
     u8* data = TEMP_BUFFER;
     u8* bottom_cpy = TEMP_BUFFER + 0xC0000; // a copy of the bottom screen framebuffer
@@ -579,7 +578,7 @@ u32 FileHexViewer(const char* path) {
             else if (pad_state & BUTTON_UP) offset = (offset > step_ud) ? offset - step_ud : 0;
             else if (pad_state & BUTTON_LEFT) offset = (offset > step_lr) ? offset - step_lr : 0;
             else if ((pad_state & BUTTON_R1) && (pad_state & BUTTON_Y)) mode++;
-            else if (pad_state & BUTTON_A) edit_mode = true;
+            else if ((pad_state & BUTTON_A) && total_data) edit_mode = true;
             else if (pad_state & (BUTTON_B|BUTTON_START)) break;
             else if (found_size && (pad_state & BUTTON_R1) && (pad_state & BUTTON_X)) {
                 u8 data[64] = { 0 };
@@ -705,14 +704,16 @@ u32 Sha256Calculator(const char* path) {
         
         snprintf(sha_path, 256, "%s.sha", path);
         bool have_sha = (FileGetData(sha_path, sha256_file, 32, 0) == 32);
-        bool write_sha = !have_sha && (drvtype & DRV_SDCARD); // writing only on SD
+        bool match_sha = have_sha && (memcmp(sha256, sha256_file, 32) == 0);
+	bool match_prev = (memcmp(sha256, sha256_prev, 32) == 0);
+	bool write_sha = (!have_sha || (have_sha && !match_sha)) && (drvtype & DRV_SDCARD); // writing only on SD
         if (ShowPrompt(write_sha, "%s\n%016llX%016llX\n%016llX%016llX%s%s%s%s%s",
             pathstr, getbe64(sha256 + 0), getbe64(sha256 + 8), getbe64(sha256 + 16), getbe64(sha256 + 24),
             (have_sha) ? "\nSHA verification: " : "",
-            (have_sha) ? ((memcmp(sha256, sha256_file, 32) == 0) ? "passed!" : "failed!") : "",
-            (memcmp(sha256, sha256_prev, 32) == 0) ? "\n \nIdentical with previous file:\n" : "",
-            (memcmp(sha256, sha256_prev, 32) == 0) ? pathstr_prev : "",
-            (write_sha) ? "\n \nWrite .SHA file?" : "") && !have_sha && write_sha) {
+            (have_sha) ? ((match_sha) ? "passed!" : "failed!") : "",
+            (match_prev) ? "\n \nIdentical with previous file:\n" : "",
+            (match_prev) ? pathstr_prev : "",
+	    (write_sha) ? "\n \nWrite .SHA file?" : "") && write_sha) {
             FileSetData(sha_path, sha256, 32, 0, true);
         }
         
@@ -1924,22 +1925,20 @@ u32 GodMode(int entrypoint) {
         bootloader = false;
         while (HID_STATE); // wait until no buttons are pressed
         while (!bootloader && !godmode9) {
-            const char* optionstr[6] = { "Resume bootloader", "Resume EixMode9", "Select payload...", "Select script...",
-                "Poweroff system", "Reboot system" };
+            const char* optionstr[6] = { "Resume EixMode9", "Resume bootloader", "Select payload...", "Select script...",
+                "Poweroff system"};
             int user_select = ShowSelectPrompt(6, optionstr, FLAVOR " bootloader menu.\nSelect action:");
             char loadpath[256];
             if (user_select == 1) {
-                bootloader = true;
-            } else if (user_select == 2) {
                 godmode9 = true;
+            } else if (user_select == 2) {
+                bootloader = true;
             } else if ((user_select == 3) && (FileSelectorSupport(loadpath, "Bootloader payloads menu.\nSelect payload:", PAYLOADS_DIR, "*.firm", true, false))) {
                 BootFirmHandler(loadpath, false, false);
             } else if ((user_select == 4) && (FileSelectorSupport(loadpath, "Bootloader scripts menu.\nSelect script:", SCRIPTS_DIR, "*.gm9", true, false))) {
                 ExecuteGM9Script(loadpath);
             } else if (user_select == 5) {
                 exit_mode = GODMODE_EXIT_POWEROFF;
-            } else if (user_select == 6) {
-                exit_mode = GODMODE_EXIT_REBOOT;
             } else if (user_select) continue;
             break;
         }
@@ -1964,8 +1963,6 @@ u32 GodMode(int entrypoint) {
     ClearScreenF(true, true, COLOR_STD_BG); // clear splash
     
     while (godmode9) { // this is the main loop
-        int curr_drvtype = DriveType(current_path);
-        
         // basic sanity checking
         if (!current_dir->n_entries) { // current dir is empty -> revert to root
             ShowPrompt(false, "Invalid directory object");
@@ -1981,6 +1978,8 @@ u32 GodMode(int entrypoint) {
         }
         if (cursor >= current_dir->n_entries) // cursor beyond allowed range
             cursor = current_dir->n_entries - 1;
+	    
+	int curr_drvtype = DriveType(current_path);
         DirEntry* curr_entry = &(current_dir->entry[cursor]);
         if ((mark_next >= 0) && (curr_entry->type != T_DOTDOT)) {
             curr_entry->marked = mark_next;
@@ -2035,7 +2034,6 @@ u32 GodMode(int entrypoint) {
                         scroll = 0;
                     }
                 } else if (user_select == fixcmac) {
-                    ShowString("%s\nFixing CMACs for drive...", namestr);
                     RecursiveFixFileCmac(curr_entry->path);
                 } else if (user_select == dirnfo) {
                     bool is_drive = (!*current_path);

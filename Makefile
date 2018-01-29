@@ -58,7 +58,8 @@ release: clean
 	@cp $(ELF) $(RELDIR)/elf
 	@cp $(CURDIR)/README.md $(RELDIR)
 	@cp $(CURDIR)/HelloScript.gm9 $(RELDIR)
-	@cp -R $(CURDIR)/resources/gm9 $(RELDIR)/gm9
+	@cp -R $(CURDIR)/resources/em9 $(RELDIR)/em9
+	@cp -R $(CURDIR)/resources/download_support.sh $(RELDIR)/download_support.sh
 
 	@-7za a $(RELDIR)/$(FLAVOR)-$(VERSION)-$(DBUILTS).zip ./$(RELDIR)/*
 
@@ -67,13 +68,11 @@ vram0:
 	@echo "Creating $(VRAM_OUT)"
 	@tar cf $(VRAM_OUT) $(VRAM_FLAGS) $(shell ls -d $(README) $(SPLASH) $(VRAM_DATA)/*)
 
-elf:
-	@set -e; for elf in $(ELF); do \
-		echo "Building $$elf"; \
-		$(MAKE) --no-print-directory -C $$(dirname $$elf); \
-	done
+%.elf: .FORCE
+	@echo "Building $@"
+	@$(MAKE) --no-print-directory -C $(@D)
 
-firm: elf vram0
+firm: $(ELF) vram0
 	@test `wc -c <$(VRAM_OUT)` -le 3145728
 	@mkdir -p $(call dirname,"$(FIRM)") $(call dirname,"$(FIRMD)")
 	firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
@@ -81,3 +80,5 @@ firm: elf vram0
 	@echo "Done!"
 	@echo "Make sure to join my Discord server!"
 	@echo "https://discord.gg/fQ8PFHR"
+
+.FORCE:

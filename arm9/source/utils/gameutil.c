@@ -756,6 +756,17 @@ u32 CryptNcchNcsdBossFirmFile(const char* orig, const char* dest, u32 mode, u16 
     if (fsize < offset) return 1;
     if (!size) size = fsize - offset;
     
+    // ensure free space in destination
+    if (!inplace) {
+        if ((fvx_lseek(dfp, offset + size) != FR_OK) ||
+            (fvx_tell(dfp) != offset + size) ||
+            (fvx_lseek(dfp, offset) != FR_OK)) {
+            fvx_close(ofp);
+            fvx_close(dfp);
+            return 1;
+        }
+    }
+
     u32 ret = 0;
     if (!ShowProgress(offset, fsize, dest)) ret = 1;
     if (mode & (GAME_NCCH|GAME_NCSD|GAME_BOSS|SYS_FIRM|GAME_NDS)) { // for NCCH / NCSD / BOSS / FIRM files
@@ -1045,6 +1056,16 @@ u32 InsertCiaContent(const char* path_cia, const char* path_content, u32 offset,
     if (!size) size = fsize - offset;
     if (fvx_open(&dfile, path_cia, FA_WRITE | FA_OPEN_APPEND) != FR_OK) {
         fvx_close(&ofile);
+        return 1;
+    }
+    
+    // ensure free space for destination file
+    UINT offset_dest = fvx_size(&dfile);
+    if ((fvx_lseek(&dfile, offset_dest + size) != FR_OK) ||
+        (fvx_tell(&dfile) != offset_dest + size) ||
+        (fvx_lseek(&dfile, offset_dest) != FR_OK)) {
+        fvx_close(&ofile);
+        fvx_close(&dfile);
         return 1;
     }
     
@@ -1404,8 +1425,10 @@ u32 DumpCxiSrlFromTmdFile(const char* path) {
         (GetTmdContentPath(path_cxi, path) != 0) ||
         (!((filetype = IdentifyFileType(path_cxi)) & (GAME_NCCH|GAME_NDS))) ||
         (GetGoodName(dname, path_cxi, false) != 0) ||
-        (CryptNcchNcsdBossFirmFile(path_cxi, dest, filetype, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0))
+        (CryptNcchNcsdBossFirmFile(path_cxi, dest, filetype, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0)) {
+        if (*dname) fvx_unlink(dest);
         return 1;
+    }
     
     return 0;
 }
@@ -1489,12 +1512,14 @@ u32 LoadSmdhFromGameFile(const char* path, Smdh* smdh) {
 }
 
 u32 ShowSmdhTitleInfo(Smdh* smdh) {
+    const u8 smdh_magic[] = { SMDH_MAGIC };
     const u32 lwrap = 24;
     u8* icon = (u8*) (TEMP_BUFFER + sizeof(Smdh));
     char* desc_l = (char*) icon + SMDH_SIZE_ICON_BIG;
     char* desc_s = (char*) desc_l + SMDH_SIZE_DESC_LONG;
     char* pub = (char*) desc_s + SMDH_SIZE_DESC_SHORT;
-    if ((GetSmdhIconBig(icon, smdh) != 0) ||
+    if ((memcmp(smdh->magic, smdh_magic, 4) != 0) ||
+        (GetSmdhIconBig(icon, smdh) != 0) ||
         (GetSmdhDescLong(desc_l, smdh) != 0) ||
         (GetSmdhDescShort(desc_s, smdh) != 0) ||
         (GetSmdhPublisher(pub, smdh) != 0))
