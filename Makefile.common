@@ -5,9 +5,9 @@ rwildcard = $(foreach d, $(wildcard $1*), \
             $(filter $(subst *, %, $2), $d) \
             $(call rwildcard, $d/, $2))
 
-FLAVOR  ?=  EixMode9
+FLAVOR  ?=  CITFA9
 README  :=  README.md
-SPLASH   =  resources/$(FLAVOR)_splash.pcx
+SPLASH   =  resources/EixMode9_splash.pcx
 
 ifeq ($(FONT),ORIG)
 CFLAGS  +=  -DFONT_ORIGINAL
@@ -58,14 +58,14 @@ ifdef SD_TIMEOUT
     CFLAGS += -DSD_TIMEOUT=$(SD_TIMEOUT)
 endif
 
-ifdef NTRBOOT
-    FTFLAGS  = -S spi-retail
-    FTDFLAGS = -S spi-dev
-    FIRM     = $(OUTDIR)/$(FLAVOR)_ntr.firm
-    FIRMD    = $(OUTDIR)/$(FLAVOR)_ntr_dev.firm
-else
+ifdef NAND
     FTFLAGS  = -S nand-retail
     FTDFLAGS = -S nand-dev
-    FIRM     = $(OUTDIR)/$(FLAVOR).firm
-    FIRMD    = $(OUTDIR)/$(FLAVOR)_dev.firm
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_firm.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_firm_dev.firm
+else
+    FTFLAGS  = -S spi-retail
+    FTDFLAGS = -S spi-dev
+    FIRM     = $(OUTDIR)/$(FLAVOR)_$(VERSION)_spi.firm
+    FIRMD    = $(OUTDIR)/$(FLAVOR)_$(VERSION)_spi_dev.firm
 endif
