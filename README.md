@@ -34,4 +34,4 @@ ReiNand uses an external native firm (firmware.bin/nativefirmware.bin) therefore
 Although Luma3DS is smaller (~80KB) and ReiSix is larger (~1.9MB) I still feel that ReiSix is better. If you don't like it, delete it from the /data directory before compiling.
 ReiNand is currently equal, if not better than Luma3DS, in my opinion, even though it has different features.
 
-If you don't understand what I mean look for WhyRei.txt in /data.
+If you don't understand what I mean look for the "Why Rei" section of EixMode9_ReadMe in the /data directory
