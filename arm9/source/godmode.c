@@ -19,7 +19,7 @@
 #include "i2c.h"
 
 
-#define N_PANES 10
+#define N_PANES 1
 
 #define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_RED : PERM_ORANGE ? COLOR_ORANGE : PERM_BLUE ? COLOR_BRIGHTBLUE : PERM_YELLOW ? COLOR_BRIGHTYELLOW : PERM_GREEN ? COLOR_GREEN : COLOR_WHITE)
 #define COLOR_ENTRY(e)  (((e)->marked) ? COLOR_MARKED : ((e)->type == T_DIR) ? COLOR_DIR : ((e)->type == T_FILE) ? COLOR_FILE : ((e)->type == T_ROOT) ?  COLOR_ROOT : COLOR_GREY)
@@ -72,7 +72,7 @@ u32 SplashInit(const char* modestr) {
     DrawStringF(BOT_SCREEN, pos_xb, pos_yb, COLOR_STD_FONT, COLOR_STD_BG, "%s\n%*.*s\n%s\n \n \n%s\n%s\n \n%s\n%s",
         namestr, strnlen(namestr, 64), strnlen(namestr, 64),
         "---------------------------------", "https://discord.gg/H3Mkktq",//release name and message should not exceed the line
-        "Mod by:", "Eix");
+        "CITFA9", "~Eix");
     DrawStringF(BOT_SCREEN, pos_xu, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, loadstr);
     DrawStringF(BOT_SCREEN, pos_xb, pos_yu, COLOR_STD_FONT, COLOR_STD_BG, "Compiled: " DBUILTL);
     
@@ -1908,8 +1908,9 @@ u32 GodMode(int entrypoint) {
     
     // check aeskeydb.bin / key state
     if ((entrypoint != ENTRY_B9S) && (CheckRecommendedKeyDb(NULL) != 0)) {
-        ShowPrompt(false, "WARNING:\nNot running from a boot9strap\ncompatible entrypoint. Not\neverything may work as expected.\n \nProvide the recommended\naeskeydb.bin file to make this\nwarning go away.");
-    }
+        ShowPrompt(false, "WARNING: aeskeydb.bin not found or invalid\nplease embed in nand or put in\n1:rw/em9/support/aeskeydb.bin\nor 1:rw/gm9/support/aeskeydb.bin");
+        exit_mode = GODMODE_EXIT_POWEROFF;
+	}
     
     #if defined(SALTMODE)
     show_splash = bootmenu = (bootloader && CheckButton(BOOTMENU_KEY));
