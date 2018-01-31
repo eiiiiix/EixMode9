@@ -1,2 +1,0 @@
-ask "boot Eix.firm from the EmuNand SD? (B:)"
-boot B:/Eix.firm
