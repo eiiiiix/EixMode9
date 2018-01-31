@@ -1,2 +1,0 @@
-ask "boot Eix.firm from the EmuNand TWLN? (5:)"
-boot 5:/Eix.firm
