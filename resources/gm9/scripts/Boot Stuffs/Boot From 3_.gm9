@@ -1,2 +1,0 @@
-ask "boot Eix.firm from the SysNand TWLP? (3:)"
-boot 3:/Eix.firm
