@@ -6,7 +6,7 @@ I didnt want to write this but here it is...
 Important information
 
 ###
-Perms system
+Perms system:
 This mod of GodMode9 (GodMode9 belongs to d0k3) has a
 diffrent perms system, all perms are unlocked from the
 start
@@ -54,13 +54,8 @@ Please keep suggestions to a minimum though
 you can make suggestions in #suggestions on my discord server (in the EixMode9 section) or by making an issue here with the label [suggestion]
 
 ##
-ELUA crap
-In using this software you cannot blame the devs of
-anything related to GodMode9 by d0k3
-You can also not claim "accident" when you accidently
-delete a important system file
-You are using this at your own risk
-
+EULA
+By using this software, you agree to hold the developers of EixMode9 & GodMode9 (including d0k3, Eix, SirNapkin1334, and anyone else who has contributed code) harmless to any claims against their program arising from mitakes/misuse. If you accidently brick your Nintendo 3DS Family System because you accidently messed up an important file, it would be your fault. We will attempt to help you fix it, but it still is your fault!
 
 #
 InfoBox
