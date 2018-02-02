@@ -1,4 +1,5 @@
 This is a WIP for something i was told by somebody i wont mention was impossible
+(basically it might be able to install CIA's on arm9)
 ignore this for now
 
 i deleted alot of files for this branch because they are not needed for what im doing
