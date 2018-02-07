@@ -79,7 +79,6 @@ u32 SplashInit(const char* modestr) {
     return 0;
 }
 
-#ifndef SCRIPT_RUNNER
 void GetTimeString(char* timestr, bool forced_update, bool full_year) {
     static DsTime dstime;
     static u64 timer = (u64) -1; // this ensures we don't check the time too often
@@ -2379,42 +2378,3 @@ u32 GodMode(int entrypoint) {
     
     return exit_mode;
 }
-
-#else
-u32 ScriptRunner(int entrypoint) {
-    // show splash and initialize
-    ClearScreenF(true, true, COLOR_STD_BG);
-    SplashInit("scriptrunner mode");
-    u64 timer = timer_start();
-    
-    InitSDCardFS();
-    AutoEmuNandBase(true);
-    InitNandCrypto(entrypoint != ENTRY_B9S);
-    InitExtFS();
-    
-    while (HID_STATE); // wait until no buttons are pressed
-    while (timer_msec( timer ) < 500); // show splash for at least 0.5 sec
-    
-    // get script from VRAM0 TAR
-    u64 autorun_gm9_size = 0;
-    void* autorun_gm9 = FindVTarFileInfo(VRAM0_AUTORUN_GM9, &autorun_gm9_size);
-    
-    if (autorun_gm9 && autorun_gm9_size) {
-        ClearScreenF(true, true, COLOR_STD_BG); // clear splash
-        // copy script to script buffer and run it
-        memset(SCRIPT_BUFFER, 0, SCRIPT_BUFFER_SIZE);
-        memcpy(SCRIPT_BUFFER, autorun_gm9, autorun_gm9_size);
-        ExecuteGM9Script(NULL);
-    } else if (PathExist("V:/" VRAM0_SCRIPTS)) {
-        char loadpath[256];
-        if (FileSelector(loadpath, FLAVOR " scripts menu.\nSelect script:", "V:/" VRAM0_SCRIPTS, "*.gm9", true, false))
-            ExecuteGM9Script(loadpath);
-    } else ShowPrompt(false, "Compiled as script autorunner\nbut no script provided.\n \nDerp!");
-    
-    // deinit
-    DeinitExtFS();
-    DeinitSDCardFS();
-    
-    return GODMODE_EXIT_REBOOT;
-}
-#endif
