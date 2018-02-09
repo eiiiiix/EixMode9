@@ -18,26 +18,6 @@
 #include "vram0.h"
 #include "i2c.h"
 
-
-#define N_PANES 1
-
-#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_RED : PERM_ORANGE ? COLOR_ORANGE : PERM_BLUE ? COLOR_BRIGHTBLUE : PERM_YELLOW ? COLOR_BRIGHTYELLOW : PERM_GREEN ? COLOR_GREEN : COLOR_WHITE)
-#define COLOR_ENTRY(e)  (((e)->marked) ? COLOR_MARKED : ((e)->type == T_DIR) ? COLOR_DIR : ((e)->type == T_FILE) ? COLOR_FILE : ((e)->type == T_ROOT) ?  COLOR_ROOT : COLOR_GREY)
-
-#define BOOTPAUSE_KEY   (BUTTON_R1|BUTTON_UP)
-#define BOOTMENU_KEY    BUTTON_X
-#define BOOTFIRM_PATHS  "0:/bootonce.firm", "C:/*.firm", "0:/Eix.firm", "1:/Eix.firm", "4:/Eix.firm", "8:/Eix.firm", "2:/Eix.firm", "3:/Eix.firm", "A:/Eix.firm", "5:/Eix.firm", "6:/Eix.firm", "B:/Eix.firm", "9:/Eix.firm", "0:/Megumin.firm", "1:/Megumin.firm", "4:/Megumin.firm", "8:/Megumin.firm", "2:/Megumin.firm", "3:/Megumin.firm", "A:/Megumin.firm", "5:/Megumin.firm", "6:/Megumin.firm", "B:/Megumin.firm", "9:/Megumin.firm", "0:/boot.firm", "1:/boot.firm", "4:/boot.firm", "8:/boot.firm", "2:/boot.firm", "3:/boot.firm", "A:/boot.firm", "5:/boot.firm", "6:/boot.firm", "B:/boot.firm", "9:/boot.firm"
-#define BOOTFIRM_TEMPS  0x1 // bits mark paths as temporary
-
-#ifdef SALTMODE // ShadowHand's own bootmenu key override
-#undef  BOOTMENU_KEY
-#define BOOTMENU_KEY    BUTTON_START
-#endif
-
-#ifdef EIXMODE//my mode :P
-#define COLOR_TOP_BAR   (PERM_IDK ? COLOR_PURPLE : PERM_EIX ? COLOR_EIX : PERM_RED ? COLOR_DARKESTGREY : PERM_ORANGE ? COLOR_DARKESTGREY : PERM_BLUE ? COLOR_DARKESTGREY : PERM_YELLOW ? COLOR_DARKESTGREY : PERM_GREEN ? COLOR_WHITE : COLOR_WHITE)  //not sure if this works
-#endif
-
 typedef struct {
     char path[256];
     u32 cursor;
@@ -254,35 +234,6 @@ void DrawUserInterface(const char* curr_path, DirEntry* curr_entry, u32 curr_pan
         DrawStringF(MAIN_SCREEN, 4, info_start + 12 + 10 + 10, color_current, COLOR_STD_BG, tempstr);
     }
     
-    // right top - clipboard
-    DrawStringF(MAIN_SCREEN, SCREEN_WIDTH_MAIN - len_info, info_start, COLOR_STD_FONT, COLOR_STD_BG, "%*s",
-        len_info / FONT_WIDTH_EXT, (clipboard->n_entries) ? "[CLIPBOARD]" : "");
-    for (u32 c = 0; c < n_cb_show; c++) {
-        u32 color_cb = COLOR_ENTRY(&(clipboard->entry[c]));
-        ResizeString(tempstr, (clipboard->n_entries > c) ? clipboard->entry[c].name : "", len_info / FONT_WIDTH_EXT, 8, true);
-        DrawStringF(MAIN_SCREEN, SCREEN_WIDTH_MAIN - len_info - 4, info_start + 12 + (c*10), color_cb, COLOR_STD_BG, tempstr);
-    }
-    *tempstr = '\0';
-    if (clipboard->n_entries > n_cb_show) snprintf(tempstr, 60, "+ %lu more", clipboard->n_entries - n_cb_show);
-    DrawStringF(MAIN_SCREEN, SCREEN_WIDTH_MAIN - len_info - 4, info_start + 12 + (n_cb_show*10), COLOR_DARKGREY, COLOR_STD_BG,
-        "%*s", len_info / FONT_WIDTH_EXT, tempstr);
-    
-    // bottom: inctruction block
-    char instr[512];
-    snprintf(instr, 512, "%s\n%s%s%s%s%s%s%s%s",
-        FLAVOR " Version " VERSION, // generic start part
-        (*curr_path) ? ((clipboard->n_entries == 0) ? "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - COPY files / [+R] CREATE entry\n" :
-        "L - MARK files (use with \x18\x19\x1A\x1B)\nX - DELETE / [+R] RENAME file(s)\nY - PASTE files / [+R] CREATE entry\n") :
-        ((GetWritePermissions() > PERM_BASE) ? "R+Y - Relock write permissions\n" : ""),
-        (*curr_path) ? "" : (GetMountState()) ? "R+X - Unmount image\n" : "",
-        (*curr_path) ? "" : (CheckSDMountState()) ? "R+B - Unmount SD card\n" : "R+B - Remount SD card\n",
-        (*curr_path) ? "R+A - Directory options\n" : "R+A - Drive options\n", 
-        "R+L - Make a Screenshot\n",
-        "R+\x1B\x1A - Switch to prev/next pane\n",
-        (clipboard->n_entries) ? "SELECT - Clear Clipboard\n" : "SELECT - Restore Clipboard\n", // only if clipboard is full
-        "START - Reboot / [+R] Poweroff\nHOME button for HOME menu"); // generic end part
-    DrawStringF(MAIN_SCREEN, instr_x, SCREEN_HEIGHT - 4 - GetDrawStringHeight(instr), COLOR_STD_FONT, COLOR_STD_BG, instr);
-}
 
 void DrawDirContents(DirStruct* contents, u32 cursor, u32* scroll) {
     const int str_width = (SCREEN_WIDTH_ALT-3) / FONT_WIDTH_EXT;
