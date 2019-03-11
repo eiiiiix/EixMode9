@@ -1,5 +1,7 @@
 #include "gameutil.h"
+#include "disadiff.h"
 #include "game.h"
+#include "nand.h" // so that we can trim NAND images
 #include "hid.h"
 #include "ui.h"
 #include "fs.h"
@@ -44,15 +46,20 @@ u32 CheckNcchHash(u8* expected, FIL* file, u32 size_data, u32 offset_ncch, NcchH
     u32 offset_data = fvx_tell(file) - offset_ncch;
     u8 hash[32];
     
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) return 1;
+    
     sha_init(SHA256_MODE);
-    for (u32 i = 0; i < size_data; i += MAIN_BUFFER_SIZE) {
-        u32 read_bytes = min(MAIN_BUFFER_SIZE, (size_data - i));
+    for (u32 i = 0; i < size_data; i += STD_BUFFER_SIZE) {
+        u32 read_bytes = min(STD_BUFFER_SIZE, (size_data - i));
         UINT bytes_read;
-        fvx_read(file, MAIN_BUFFER, read_bytes, &bytes_read);
-        DecryptNcch(MAIN_BUFFER, offset_data + i, read_bytes, ncch, exefs);
-        sha_update(MAIN_BUFFER, read_bytes);
+        fvx_read(file, buffer, read_bytes, &bytes_read);
+        DecryptNcch(buffer, offset_data + i, read_bytes, ncch, exefs);
+        sha_update(buffer, read_bytes);
     }
     sha_get(hash);
+    
+    free(buffer);
     
     return (memcmp(hash, expected, 32) == 0) ? 0 : 1;
 }
@@ -178,12 +185,11 @@ u32 LoadNcchMeta(CiaMeta* meta, const char* path, u64 offset) {
 }
 
 u32 LoadTmdFile(TitleMetaData* tmd, const char* path) {
-    const u8 magic[] = { TMD_SIG_TYPE };
     UINT br;
     
     // full TMD file
     if ((fvx_qread(path, tmd, 0, TMD_SIZE_MAX, &br) != FR_OK) ||
-        (memcmp(tmd->sig_type, magic, sizeof(magic)) != 0) ||
+        (br < TMD_SIZE_MIN) || (ValidateTmd(tmd) != 0) || 
         (br < TMD_SIZE_N(getbe16(tmd->content_count))))
         return 1;
     
@@ -194,6 +200,7 @@ u32 LoadCdnTicketFile(Ticket* ticket, const char* path_cnt) {
     // path points to CDN content file
     char path_cetk[256];
     strncpy(path_cetk, path_cnt, 256);
+    path_cetk[255] = '\0';
     char* name_cetk = strrchr(path_cetk, '/');
     if (!name_cetk) return 1; // will not happen
     char* ext_cetk = strrchr(++name_cetk, '.');
@@ -211,22 +218,27 @@ u32 LoadCdnTicketFile(Ticket* ticket, const char* path_cnt) {
 u32 GetTmdContentPath(char* path_content, const char* path_tmd) {
     // get path to TMD first content
     const u8 dlc_tid_high[] = { DLC_TID_HIGH };
-    TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
-    TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
     
     // content path string
     char* name_content;
     strncpy(path_content, path_tmd, 256);
+    path_content[255] = '\0';
     name_content = strrchr(path_content, '/');
     if (!name_content) return 1; // will not happen
     name_content++;
     
     // load TMD file
-    if ((LoadTmdFile(tmd, path_tmd) != 0) || !getbe16(tmd->content_count))
+    TitleMetaData* tmd = (TitleMetaData*) malloc(TMD_SIZE_MAX);
+    TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
+    if (!tmd) return 1;
+    if ((LoadTmdFile(tmd, path_tmd) != 0) || !getbe16(tmd->content_count)) {
+        free(tmd);
         return 1;
+    }
     snprintf(name_content, 256 - (name_content - path_content),
         (memcmp(tmd->title_id, dlc_tid_high, sizeof(dlc_tid_high)) == 0) ? "00000000/%08lx.app" : "%08lx.app", getbe32(chunk->id));
     
+    free(tmd);
     return 0;
 }
 
@@ -268,17 +280,24 @@ u32 VerifyTmdContent(const char* path, u64 offset, TmdContentChunk* chunk, const
     }
     fvx_lseek(&file, offset);
     
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) {
+        fvx_close(&file);
+        return 1;
+    }
+    
     GetTmdCtr(ctr, chunk);
     sha_init(SHA256_MODE);
-    for (u32 i = 0; i < size; i += MAIN_BUFFER_SIZE) {
-        u32 read_bytes = min(MAIN_BUFFER_SIZE, (size - i));
+    for (u32 i = 0; i < size; i += STD_BUFFER_SIZE) {
+        u32 read_bytes = min(STD_BUFFER_SIZE, (size - i));
         UINT bytes_read;
-        fvx_read(&file, MAIN_BUFFER, read_bytes, &bytes_read);
-        if (encrypted) DecryptCiaContentSequential(MAIN_BUFFER, read_bytes, ctr, titlekey);
-        sha_update(MAIN_BUFFER, read_bytes);
+        fvx_read(&file, buffer, read_bytes, &bytes_read);
+        if (encrypted) DecryptCiaContentSequential(buffer, read_bytes, ctr, titlekey);
+        sha_update(buffer, read_bytes);
         if (!ShowProgress(i + read_bytes, size, path)) break;
     }
     sha_get(hash);
+    free(buffer);
     fvx_close(&file);
     
     return memcmp(hash, expected, 32);
@@ -286,6 +305,7 @@ u32 VerifyTmdContent(const char* path, u64 offset, TmdContentChunk* chunk, const
 
 u32 VerifyNcchFile(const char* path, u32 offset, u32 size) {
     NcchHeader ncch;
+    NcchExtHeader exthdr;
     ExeFsHeader exefs;
     FIL file;
     
@@ -299,6 +319,13 @@ u32 VerifyNcchFile(const char* path, u32 offset, u32 size) {
     fvx_lseek(&file, offset);
     if (GetNcchHeaders(&ncch, NULL, NULL, &file) != 0) {
         if (!offset) ShowPrompt(false, "%s\nError: Not a NCCH file", pathstr);
+        fvx_close(&file);
+        return 1;
+    }
+
+    fvx_lseek(&file, offset);
+    if (ncch.size_exthdr && (GetNcchHeaders(&ncch, &exthdr, NULL, &file) != 0)) {
+        if (!offset) ShowPrompt(false, "%s\nError: Missing ExtHeader", pathstr);
         fvx_close(&file);
         return 1;
     }
@@ -347,8 +374,9 @@ u32 VerifyNcchFile(const char* path, u32 offset, u32 size) {
         ver_romfs = CheckNcchHash(ncch.hash_romfs, &file, ncch.size_romfs_hash * NCCH_MEDIA_UNIT, offset, &ncch, NULL);
     }
     
-    // thorough exefs verification
-    if (ncch.size_exefs > 0) {
+    // thorough exefs verification (workaround for Process9)
+    if (!ShowProgress(0, 0, path)) return 1;
+    if ((ncch.size_exefs > 0) && (memcmp(exthdr.name, "Process9", 8) != 0)) {
         for (u32 i = 0; !ver_exefs && (i < 10); i++) {
             ExeFsFileHeader* exefile = exefs.files + i;
             u8* hash = exefs.hashes[9 - i];
@@ -356,6 +384,93 @@ u32 VerifyNcchFile(const char* path, u32 offset, u32 size) {
             fvx_lseek(&file, offset + (ncch.offset_exefs * NCCH_MEDIA_UNIT) + 0x200 + exefile->offset);
             ver_exefs = CheckNcchHash(hash, &file, exefile->size, offset, &ncch, &exefs);
         }
+    }
+
+    // thorough romfs verification
+    if (!ver_romfs && (ncch.size_romfs > 0)) {
+        UINT btr;
+        
+        // load ivfc header
+        RomFsIvfcHeader ivfc;
+        fvx_lseek(&file, offset + (ncch.offset_romfs * NCCH_MEDIA_UNIT));
+        if ((fvx_read(&file, &ivfc, sizeof(RomFsIvfcHeader), &btr) != FR_OK) ||
+            (DecryptNcch((u8*) &ivfc, ncch.offset_romfs * NCCH_MEDIA_UNIT, sizeof(RomFsIvfcHeader), &ncch, NULL) != 0) )
+            ver_romfs = 1;
+        
+        // load data
+        u64 lvl1_size = 0;
+        u64 lvl2_size = 0;
+        u8* masterhash = NULL;
+        u8* lvl1_data = NULL;
+        u8* lvl2_data = NULL;
+        if (!ver_romfs && (ValidateRomFsHeader(&ivfc, ncch.size_romfs * NCCH_MEDIA_UNIT) == 0)) {
+            // load masterhash(es)
+            masterhash = malloc(ivfc.size_masterhash);
+            if (masterhash) {
+                u64 offset_add = (ncch.offset_romfs * NCCH_MEDIA_UNIT) + sizeof(RomFsIvfcHeader);
+                fvx_lseek(&file, offset + offset_add);
+                if ((fvx_read(&file, masterhash, ivfc.size_masterhash, &btr) != FR_OK) ||
+                    (DecryptNcch(masterhash, offset_add, ivfc.size_masterhash, &ncch, NULL) != 0))
+                    ver_romfs = 1;
+            }
+
+            // load lvl1
+            lvl1_size = align(ivfc.size_lvl1, 1 << ivfc.log_lvl1);
+            lvl1_data = malloc(lvl1_size);
+            if (lvl1_data) {
+                u64 offset_add = (ncch.offset_romfs * NCCH_MEDIA_UNIT) + GetRomFsLvOffset(&ivfc, 1);
+                fvx_lseek(&file, offset + offset_add);
+                if ((fvx_read(&file, lvl1_data, lvl1_size, &btr) != FR_OK) ||
+                    (DecryptNcch(lvl1_data, offset_add, lvl1_size, &ncch, NULL) != 0))
+                    ver_romfs = 1;
+            }
+
+            // load lvl2
+            lvl2_size = align(ivfc.size_lvl2, 1 << ivfc.log_lvl2);
+            lvl2_data = malloc(lvl2_size);
+            if (lvl2_data) {
+                u64 offset_add = (ncch.offset_romfs * NCCH_MEDIA_UNIT) + GetRomFsLvOffset(&ivfc, 2);
+                fvx_lseek(&file, offset + offset_add);
+                if ((fvx_read(&file, lvl2_data, lvl2_size, &btr) != FR_OK) ||
+                    (DecryptNcch(lvl2_data, offset_add, lvl2_size, &ncch, NULL) != 0))
+                    ver_romfs = 1;
+            }
+
+            // check mallocs
+            if (!masterhash || !lvl1_data || !lvl2_data)
+                ver_romfs = 1; // should never happen
+        }
+        
+        // actual verification
+        if (!ver_romfs) {
+            // verify lvl1
+            u32 n_blocks = lvl1_size >> ivfc.log_lvl1;
+            u32 block_log = ivfc.log_lvl1;
+            for (u32 i = 0; !ver_romfs && (i < n_blocks); i++) 
+                ver_romfs = (u32) sha_cmp(masterhash + (i*0x20), lvl1_data + (i<<block_log), 1<<block_log, SHA256_MODE);
+            
+            // verify lvl2
+            n_blocks = lvl2_size >> ivfc.log_lvl2;
+            block_log = ivfc.log_lvl2;
+            for (u32 i = 0; !ver_romfs && (i < n_blocks); i++) {
+                ver_romfs = sha_cmp(lvl1_data + (i*0x20), lvl2_data + (i<<block_log), 1<<block_log, SHA256_MODE);
+            }
+            
+            // lvl3 verification (this will take long)
+            u64 offset_add = (ncch.offset_romfs * NCCH_MEDIA_UNIT) + GetRomFsLvOffset(&ivfc, 3);
+            n_blocks = align(ivfc.size_lvl3, 1 << ivfc.log_lvl3) >> ivfc.log_lvl3;
+            block_log = ivfc.log_lvl3;
+            fvx_lseek(&file, offset + offset_add);
+            for (u32 i = 0; !ver_romfs && (i < n_blocks); i++) {
+                ver_romfs = CheckNcchHash(lvl2_data + (i*0x20), &file, 1 << block_log, offset, &ncch, NULL);
+                offset_add += 1 << block_log;
+                if (!(i % 16) && !ShowProgress(i+1, n_blocks, path)) ver_romfs = 1;
+            }
+        }
+
+        if (masterhash) free(masterhash);
+        if (lvl1_data) free(lvl1_data);
+        if (lvl2_data) free(lvl2_data);
     }
     
     if (!offset && (ver_exthdr|ver_exefs|ver_romfs)) { // verification summary
@@ -399,9 +514,11 @@ u32 VerifyNcsdFile(const char* path) {
 }
 
 u32 VerifyCiaFile(const char* path) {
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
+    CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
     CiaInfo info;
     u8 titlekey[16];
+    
+    if (!cia) return 1;
     
      // path string
     char pathstr[32 + 1];
@@ -412,31 +529,40 @@ u32 VerifyCiaFile(const char* path) {
         (GetCiaInfo(&info, &(cia->header)) != 0) ||
         (GetTitleKey(titlekey, &(cia->ticket)) != 0)) {
         ShowPrompt(false, "%s\nError: Probably not a CIA file", pathstr);
+        free(cia);
+        return 1;
+    }
+
+    // verify TMD
+    if (VerifyTmd(&(cia->tmd)) != 0) {
+        ShowPrompt(false, "%s\nError: TMD probably corrupted", pathstr);
+        free(cia);
         return 1;
     }
     
     // verify contents
     u32 content_count = getbe16(cia->tmd.content_count);
     u64 next_offset = info.offset_content;
+    u8* cnt_index = cia->header.content_index;
     for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
         TmdContentChunk* chunk = &(cia->content_list[i]);
+        u16 index = getbe16(chunk->index);
+        if (!(cnt_index[index/8] & (1 << (7-(index%8))))) continue; // don't check missing contents
         if (VerifyTmdContent(path, next_offset, chunk, titlekey) != 0) {
             ShowPrompt(false, "%s\nID %08lX (%08llX@%08llX)\nVerification failed",
                 pathstr, getbe32(chunk->id), getbe64(chunk->size), next_offset, i);
+            free(cia);
             return 1;
         }
         next_offset += getbe64(chunk->size);
     }
     
+    free(cia);
     return 0;
 }
 
 u32 VerifyTmdFile(const char* path, bool cdn) {
     const u8 dlc_tid_high[] = { DLC_TID_HIGH };
-    TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
-    TmdContentChunk* content_list = (TmdContentChunk*) (tmd + 1);
-    Ticket* ticket = (Ticket*) (TEMP_BUFFER + TMD_SIZE_MAX);
-    u8 titlekey[0x10] = { 0xFF };
     
     // path string
     char pathstr[32 + 1];
@@ -446,22 +572,29 @@ u32 VerifyTmdFile(const char* path, bool cdn) {
     char path_content[256];
     char* name_content;
     strncpy(path_content, path, 256);
+    path_content[255] = '\0';
     name_content = strrchr(path_content, '/');
     if (!name_content) return 1; // will not happen
     name_content++;
     
     // load TMD file
-    if (LoadTmdFile(tmd, path) != 0) {
+    TitleMetaData* tmd = (TitleMetaData*) malloc(TMD_SIZE_MAX);
+    TmdContentChunk* content_list = (TmdContentChunk*) (tmd + 1);
+    if ((LoadTmdFile(tmd, path) != 0) || (VerifyTmd(tmd) != 0)) {
         ShowPrompt(false, "%s\nError: TMD probably corrupted", pathstr);
+        free(tmd);
         return 1;
     }
     
+    u8 titlekey[0x10] = { 0xFF };
     if (cdn) { // load / build ticket (for titlekey / CDN only)
-        if (!((LoadCdnTicketFile(ticket, path) == 0) ||
-             ((BuildFakeTicket(ticket, tmd->title_id) == 0) &&
-             (FindTitleKey(ticket, tmd->title_id) == 0))) ||
-            (GetTitleKey(titlekey, ticket) != 0)) {
+        Ticket ticket;
+        if (!((LoadCdnTicketFile(&ticket, path) == 0) ||
+             ((BuildFakeTicket(&ticket, tmd->title_id) == 0) &&
+             (FindTitleKey(&ticket, tmd->title_id) == 0))) ||
+            (GetTitleKey(titlekey, &ticket) != 0)) {
             ShowPrompt(false, "%s\nError: CDN titlekey not found", pathstr);
+            free(tmd);
             return 1;
         }
     }
@@ -477,66 +610,59 @@ u32 VerifyTmdFile(const char* path, bool cdn) {
         TruncateString(pathstr, path_content, 32, 8);
         if (VerifyTmdContent(path_content, 0, chunk, titlekey) != 0) {
             ShowPrompt(false, "%s\nVerification failed", pathstr);
+            free(tmd);
             return 1;
         }
     }
     
+    free(tmd);
     return 0;
 }
 
 u32 VerifyFirmFile(const char* path) {
-    FirmHeader header;
-    FIL file;
-    UINT btr;
-    
     char pathstr[32 + 1];
     TruncateString(pathstr, path, 32, 8);
     
-    // open file, get FIRM header
-    if (fvx_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
-        return 1;
-    fvx_lseek(&file, 0);
-    if ((fvx_read(&file, &header, sizeof(FirmHeader), &btr) != FR_OK) ||
-        (ValidateFirmHeader(&header, fvx_size(&file)) != 0)) {
-        fvx_close(&file);
+    void* firm_buffer = (void*) malloc(FIRM_MAX_SIZE);
+    if (!firm_buffer) return 1;
+    
+    // load the whole FIRM into memory
+    u32 firm_size = fvx_qsize(path);
+    if ((firm_size > FIRM_MAX_SIZE) || (fvx_qread(path, firm_buffer, 0, firm_size, NULL) != FR_OK) ||
+        (ValidateFirmHeader(firm_buffer, firm_size) != 0)) {
+        free(firm_buffer);
         return 1;
     }
     
     // hash verify all available sections
-    for (u32 i = 0; i < 4; i++) {
-        FirmSectionHeader* section = header.sections + i;
-        u32 size = section->size;
-        if (!size) continue;
-        fvx_lseek(&file, section->offset);
-        sha_init(SHA256_MODE);
-        for (u32 i = 0; i < size; i += MAIN_BUFFER_SIZE) {
-            u32 read_bytes = min(MAIN_BUFFER_SIZE, (size - i));
-            fvx_read(&file, MAIN_BUFFER, read_bytes, &btr);
-            sha_update(MAIN_BUFFER, read_bytes);
-        }
-        u8 hash[0x20];
-        sha_get(hash);
-        if (memcmp(hash, section->hash, 0x20) != 0) {
+    FirmHeader header;
+    memcpy(&header, firm_buffer, sizeof(FirmHeader));
+   for (u32 i = 0; i < 4; i++) {
+        FirmSectionHeader* sct = header.sections + i; 
+        void* section = ((u8*) firm_buffer) + sct->offset;
+        if (!(sct->size)) continue;
+        if (sha_cmp(sct->hash, section, sct->size, SHA256_MODE) != 0) {
             ShowPrompt(false, "%s\nSection %u hash mismatch", pathstr, i);
-            fvx_close(&file);
+            free(firm_buffer);
             return 1;
         }
     }
-    fvx_close(&file);
     
     // no arm11 / arm9 entrypoints?
     if (!header.entry_arm9) {
         ShowPrompt(false, "%s\nARM9 entrypoint is missing", pathstr);
+        free(firm_buffer);
         return 1;
     } else if (!header.entry_arm11) {
         ShowPrompt(false, "%s\nWarning: ARM11 entrypoint is missing", pathstr);
     }
     
+    free(firm_buffer);
     return 0;
 }
 
 u32 VerifyBossFile(const char* path) {
-    BossHeader* boss = (BossHeader*) TEMP_BUFFER;
+    BossHeader boss;
     u32 payload_size;
     bool encrypted = false;
     FIL file;
@@ -545,48 +671,65 @@ u32 VerifyBossFile(const char* path) {
     char pathstr[32 + 1];
     TruncateString(pathstr, path, 32, 8);
     
-    // read file header
-    
+    // read file header 
     if (fvx_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
         return 1;
     fvx_lseek(&file, 0);
-    if ((fvx_read(&file, boss, sizeof(BossHeader), &btr) != FR_OK) ||
-        (btr != sizeof(BossHeader)) || (ValidateBossHeader(boss, 0) != 0)) {
+    if ((fvx_read(&file, &boss, sizeof(BossHeader), &btr) != FR_OK) ||
+        (btr != sizeof(BossHeader)) || (ValidateBossHeader(&boss, 0) != 0)) {
         ShowPrompt(false, "%s\nError: Not a BOSS file", pathstr);
         fvx_close(&file);
         return 1;
     }
     
     // get / check size
-    payload_size = getbe32(boss->filesize) - sizeof(BossHeader);
+    payload_size = getbe32(boss.filesize) - sizeof(BossHeader);
     if (!payload_size) {
         fvx_close(&file);
         return 1;
     }
     
     // check if encrypted, decrypt if required
-    encrypted = (CheckBossEncrypted(boss) == 0);
-    if (encrypted) CryptBoss((u8*) boss, 0, sizeof(BossHeader), boss);
+    encrypted = (CheckBossEncrypted(&boss) == 0);
+    if (encrypted) CryptBoss((void*) &boss, 0, sizeof(BossHeader), &boss);
+    
+    // set up a buffer
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) {
+        fvx_close(&file);
+        return 1;
+    }
     
     // actual hash calculation & compare
     u8 hash[32];
     sha_init(SHA256_MODE);
-    GetBossPayloadHashHeader(MAIN_BUFFER, boss);
-    u32 read_bytes = min((MAIN_BUFFER_SIZE - BOSS_SIZE_PAYLOAD_HEADER), payload_size);
-    fvx_read(&file, MAIN_BUFFER + BOSS_SIZE_PAYLOAD_HEADER, read_bytes, &btr);
-    if (encrypted) CryptBoss(MAIN_BUFFER + BOSS_SIZE_PAYLOAD_HEADER, sizeof(BossHeader), read_bytes, boss);
-    sha_update(MAIN_BUFFER, read_bytes + BOSS_SIZE_PAYLOAD_HEADER);
-    for (u32 i = read_bytes; i < payload_size; i += MAIN_BUFFER_SIZE) {
-        read_bytes = min(MAIN_BUFFER_SIZE, (payload_size - i));
-        fvx_read(&file, MAIN_BUFFER, read_bytes, &btr);
-        if (encrypted) CryptBoss(MAIN_BUFFER, sizeof(BossHeader) + i, read_bytes, boss);
-        sha_update(MAIN_BUFFER, read_bytes);
+    
+    GetBossPayloadHashHeader(buffer, &boss);
+    u32 read_bytes = min((STD_BUFFER_SIZE - BOSS_SIZE_PAYLOAD_HEADER), payload_size);
+    fvx_read(&file, buffer + BOSS_SIZE_PAYLOAD_HEADER, read_bytes, &btr);
+    if (encrypted) CryptBoss(buffer + BOSS_SIZE_PAYLOAD_HEADER, sizeof(BossHeader), read_bytes, &boss);
+    sha_update(buffer, read_bytes + BOSS_SIZE_PAYLOAD_HEADER);
+    
+    for (u32 i = read_bytes; i < payload_size; i += STD_BUFFER_SIZE) {
+        read_bytes = min(STD_BUFFER_SIZE, (payload_size - i));
+        fvx_read(&file, buffer, read_bytes, &btr);
+        if (encrypted) CryptBoss(buffer, sizeof(BossHeader) + i, read_bytes, &boss);
+        sha_update(buffer, read_bytes);
     }
-    fvx_close(&file);
+    
     sha_get(hash);
-    if (memcmp(hash, boss->hash_payload, 0x20) != 0) {
-        ShowPrompt(false, "%s\nBOSS payload hash mismatch", pathstr);
-        return 1;
+    fvx_close(&file);
+    free(buffer);
+    
+    if (memcmp(hash, boss.hash_payload, 0x20) != 0) {
+        if (ShowPrompt(true, "%s\nBOSS payload hash mismatch.\n \nTry to fix it?", pathstr)) {
+            // fix hash, reencrypt BOSS header if required, write to file
+            memcpy(boss.hash_payload, hash, 0x20);
+            if (encrypted) CryptBoss((void*) &boss, 0, sizeof(BossHeader), &boss);
+            if (!CheckWritePermissions(path) ||
+                (fvx_qwrite(path, &boss, 0, sizeof(BossHeader), NULL) != FR_OK))
+                return 1;
+        } else return 1;
     }
     
     return 0;
@@ -636,24 +779,31 @@ u32 CheckEncryptedNcsdFile(const char* path) {
 }
 
 u32 CheckEncryptedCiaFile(const char* path) {
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
+    CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
     CiaInfo info;
+    
+    if (!cia) return 1;
     
     // load CIA stub
     if ((LoadCiaStub(cia, path) != 0) ||
-        (GetCiaInfo(&info, &(cia->header)) != 0))
+        (GetCiaInfo(&info, &(cia->header)) != 0)) {
+        free(cia);
         return 1;
+    }
     
     // check for encryption in CIA contents
     u32 content_count = getbe16(cia->tmd.content_count);
     u64 next_offset = info.offset_content;
     for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
         TmdContentChunk* chunk = &(cia->content_list[i]);
-        if ((getbe16(chunk->type) & 0x1) || (CheckEncryptedNcchFile(path, next_offset) == 0))
+        if ((getbe16(chunk->type) & 0x1) || (CheckEncryptedNcchFile(path, next_offset) == 0)) {
+            free(cia);
             return 0; // encryption found
+        }
         next_offset += getbe64(chunk->size);
     }
     
+    free(cia);
     return 1;
 }
 
@@ -689,16 +839,10 @@ u32 CheckEncryptedFirmFile(const char* path) {
 }
 
 u32 CheckEncryptedBossFile(const char* path) {
-    BossHeader* boss = (BossHeader*) TEMP_BUFFER;
-    UINT btr;
-    
-    // get boss header
-    if ((fvx_qread(path, boss, 0, sizeof(BossHeader), &btr) != FR_OK) ||
-        (btr != sizeof(BossHeader))) {
-        return 1;
-    }
-    
-    return CheckBossEncrypted(boss);
+    // get boss header, check if encrypted
+    BossHeader boss;
+    if (fvx_qread(path, &boss, 0, sizeof(BossHeader), NULL) != FR_OK) return 1;
+    return CheckBossEncrypted(&boss);
 }
 
 u32 CheckEncryptedGameFile(const char* path) {
@@ -766,21 +910,29 @@ u32 CryptNcchNcsdBossFirmFile(const char* orig, const char* dest, u32 mode, u16 
             return 1;
         }
     }
-
+    
+    // set up buffer
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) {
+        fvx_close(ofp);
+        fvx_close(dfp);
+        return 1;
+    }
+        
     u32 ret = 0;
     if (!ShowProgress(offset, fsize, dest)) ret = 1;
     if (mode & (GAME_NCCH|GAME_NCSD|GAME_BOSS|SYS_FIRM|GAME_NDS)) { // for NCCH / NCSD / BOSS / FIRM files
-        for (u64 i = 0; (i < size) && (ret == 0); i += MAIN_BUFFER_SIZE) {
-            u32 read_bytes = min(MAIN_BUFFER_SIZE, (size - i));
+        for (u64 i = 0; (i < size) && (ret == 0); i += STD_BUFFER_SIZE) {
+            u32 read_bytes = min(STD_BUFFER_SIZE, (size - i));
             UINT bytes_read, bytes_written;
-            if (fvx_read(ofp, MAIN_BUFFER, read_bytes, &bytes_read) != FR_OK) ret = 1;
-            if (((mode & GAME_NCCH) && (CryptNcchSequential(MAIN_BUFFER, i, read_bytes, crypto) != 0)) ||
-                ((mode & GAME_NCSD) && (CryptNcsdSequential(MAIN_BUFFER, i, read_bytes, crypto) != 0)) ||
-                ((mode & GAME_BOSS) && crypt_boss && (CryptBossSequential(MAIN_BUFFER, i, read_bytes) != 0)) ||
-                ((mode & SYS_FIRM) && (DecryptFirmSequential(MAIN_BUFFER, i, read_bytes) != 0)))
+            if (fvx_read(ofp, buffer, read_bytes, &bytes_read) != FR_OK) ret = 1;
+            if (((mode & GAME_NCCH) && (CryptNcchSequential(buffer, i, read_bytes, crypto) != 0)) ||
+                ((mode & GAME_NCSD) && (CryptNcsdSequential(buffer, i, read_bytes, crypto) != 0)) ||
+                ((mode & GAME_BOSS) && crypt_boss && (CryptBossSequential(buffer, i, read_bytes) != 0)) ||
+                ((mode & SYS_FIRM) && (DecryptFirmSequential(buffer, i, read_bytes) != 0)))
                 ret = 1;
             if (inplace) fvx_lseek(ofp, fvx_tell(ofp) - read_bytes);
-            if (fvx_write(dfp, MAIN_BUFFER, read_bytes, &bytes_written) != FR_OK) ret = 1;
+            if (fvx_write(dfp, buffer, read_bytes, &bytes_written) != FR_OK) ret = 1;
             if ((read_bytes != bytes_read) || (bytes_read != bytes_written)) ret = 1;
             if (!ShowProgress(offset + i + read_bytes, fsize, dest)) ret = 1;
         }
@@ -790,10 +942,10 @@ u32 CryptNcchNcsdBossFirmFile(const char* orig, const char* dest, u32 mode, u16 
         UINT bytes_read, bytes_written;
         u8 ctr[16];
         
-        NcchHeader* ncch = (NcchHeader*) (void*) MAIN_BUFFER;
+        NcchHeader* ncch = (NcchHeader*) (void*) buffer;
         GetTmdCtr(ctr, chunk); // NCCH crypto?
-        if (fvx_read(ofp, MAIN_BUFFER, sizeof(NcchHeader), &bytes_read) != FR_OK) ret = 1;
-        if (cia_crypto) DecryptCiaContentSequential(MAIN_BUFFER, sizeof(NcchHeader), ctr, titlekey);
+        if (fvx_read(ofp, buffer, sizeof(NcchHeader), &bytes_read) != FR_OK) ret = 1;
+        if (cia_crypto) DecryptCiaContentSequential(buffer, sizeof(NcchHeader), ctr, titlekey);
         ncch_crypto = ((ValidateNcchHeader(ncch) == 0) && (NCCH_ENCRYPTED(ncch) || !(crypto & NCCH_NOCRYPTO)));
         if (ncch_crypto && (SetupNcchCrypto(ncch, crypto) != 0))
             ret = 1;
@@ -801,14 +953,14 @@ u32 CryptNcchNcsdBossFirmFile(const char* orig, const char* dest, u32 mode, u16 
         GetTmdCtr(ctr, chunk);
         fvx_lseek(ofp, offset);
         sha_init(SHA256_MODE);
-        for (u64 i = 0; (i < size) && (ret == 0); i += MAIN_BUFFER_SIZE) {
-            u32 read_bytes = min(MAIN_BUFFER_SIZE, (size - i));
-            if (fvx_read(ofp, MAIN_BUFFER, read_bytes, &bytes_read) != FR_OK) ret = 1;
-            if (cia_crypto && (DecryptCiaContentSequential(MAIN_BUFFER, read_bytes, ctr, titlekey) != 0)) ret = 1;
-            if (ncch_crypto && (CryptNcchSequential(MAIN_BUFFER, i, read_bytes, crypto) != 0)) ret = 1;
+        for (u64 i = 0; (i < size) && (ret == 0); i += STD_BUFFER_SIZE) {
+            u32 read_bytes = min(STD_BUFFER_SIZE, (size - i));
+            if (fvx_read(ofp, buffer, read_bytes, &bytes_read) != FR_OK) ret = 1;
+            if (cia_crypto && (DecryptCiaContentSequential(buffer, read_bytes, ctr, titlekey) != 0)) ret = 1;
+            if (ncch_crypto && (CryptNcchSequential(buffer, i, read_bytes, crypto) != 0)) ret = 1;
             if (inplace) fvx_lseek(ofp, fvx_tell(ofp) - read_bytes);
-            if (fvx_write(dfp, MAIN_BUFFER, read_bytes, &bytes_written) != FR_OK) ret = 1;
-            sha_update(MAIN_BUFFER, read_bytes);
+            if (fvx_write(dfp, buffer, read_bytes, &bytes_written) != FR_OK) ret = 1;
+            sha_update(buffer, read_bytes);
             if ((read_bytes != bytes_read) || (bytes_read != bytes_written)) ret = 1;
             if (!ShowProgress(offset + i + read_bytes, fsize, dest)) ret = 1;
         }
@@ -818,13 +970,13 @@ u32 CryptNcchNcsdBossFirmFile(const char* orig, const char* dest, u32 mode, u16 
     
     fvx_close(ofp);
     if (!inplace) fvx_close(dfp);
+    if (buffer) free(buffer);
     
     return ret;
 }
 
 u32 CryptCiaFile(const char* orig, const char* dest, u16 crypto) {
     bool inplace = (strncmp(orig, dest, 256) == 0);
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
     CiaInfo info;
     u8 titlekey[16];
     
@@ -835,20 +987,28 @@ u32 CryptCiaFile(const char* orig, const char* dest, u16 crypto) {
     if (!inplace) f_unlink(dest);
     
     // load CIA stub from origin
+    CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
+    if (!cia) return 1;
     if ((LoadCiaStub(cia, orig) != 0) ||
         (GetCiaInfo(&info, &(cia->header)) != 0) ||
         (GetTitleKey(titlekey, &(cia->ticket)) != 0)) {
+        free(cia);
         return 1;
     }
     
     // decrypt CIA contents
     u32 content_count = getbe16(cia->tmd.content_count);
     u64 next_offset = info.offset_content;
+    u8* cnt_index = cia->header.content_index;
     for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
         TmdContentChunk* chunk = &(cia->content_list[i]);
         u64 size = getbe64(chunk->size);
-        if (CryptNcchNcsdBossFirmFile(orig, dest, GAME_CIA, crypto, next_offset, size, chunk, titlekey) != 0)
+        u16 index = getbe16(chunk->index);
+        if (!(cnt_index[index/8] & (1 << (7-(index%8))))) continue; // don't crypt missing contents
+        if (CryptNcchNcsdBossFirmFile(orig, dest, GAME_CIA, crypto, next_offset, size, chunk, titlekey) != 0) {
+            free(cia);
             return 1;
+        }
         next_offset += size;
     }
     
@@ -856,83 +1016,53 @@ u32 CryptCiaFile(const char* orig, const char* dest, u16 crypto) {
     if (!inplace && (info.size_meta == CIA_META_SIZE)) {
         CiaMeta* meta = (CiaMeta*) (void*) (cia + 1);
         if ((fvx_qread(orig, meta, info.offset_meta, CIA_META_SIZE, NULL) != FR_OK) ||
-            (fvx_qwrite(dest, meta, info.offset_meta, CIA_META_SIZE, NULL) != FR_OK))
+            (fvx_qwrite(dest, meta, info.offset_meta, CIA_META_SIZE, NULL) != FR_OK)) {
+            free(cia);
             return 1;
+        }
     }
     
     // fix TMD hashes, write CIA stub to destination
-    if ((FixTmdHashes(&(cia->tmd)) != 0) ||
-        (WriteCiaStub(cia, dest) != 0)) return 1;
+    if ((FixTmdHashes(&(cia->tmd)) != 0) || (WriteCiaStub(cia, dest) != 0)) {
+        free(cia);
+        return 1;
+    }
     
+    free(cia);
     return 0;
 }
 
 u32 DecryptFirmFile(const char* orig, const char* dest) {
     const u8 dec_magic[] = { 'D', 'E', 'C', '\0' }; // insert to decrypted firms
-    FirmHeader firm;
-    FIL file;
-    UINT btr;
+    void* firm_buffer = (void*) malloc(FIRM_MAX_SIZE);
+    if (!firm_buffer) return 1;
     
-    // actual decryption
-    if (CryptNcchNcsdBossFirmFile(orig, dest, SYS_FIRM, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0)
-        return 1;
-    
-    // open destination file, get FIRM header
-    if (fvx_open(&file, dest, FA_READ | FA_WRITE | FA_OPEN_EXISTING) != FR_OK)
-        return 1;
-    fvx_lseek(&file, 0);
-    if ((fvx_read(&file, &firm, sizeof(FirmHeader), &btr) != FR_OK) ||
-        (ValidateFirmHeader(&firm, fvx_size(&file)) != 0)) {
-        fvx_close(&file);
+    // load the whole FIRM into memory & decrypt it 
+    u32 firm_size = fvx_qsize(orig);
+    if ((firm_size > FIRM_MAX_SIZE) || (fvx_qread(orig, firm_buffer, 0, firm_size, NULL) != FR_OK) ||
+        (DecryptFirmFull(firm_buffer, firm_size) != 0)) {
+        free(firm_buffer);
         return 1;
     }
     
-    // find ARM9 section
-    FirmSectionHeader* arm9s = FindFirmArm9Section(&firm);
-    if (!arm9s || !arm9s->size) return 1;
+    // add the decrypted magic
+    FirmHeader* firm = (FirmHeader*) firm_buffer;
+    memcpy(firm->dec_magic, dec_magic, sizeof(dec_magic));
     
-    // decrypt ARM9 loader header
-    FirmA9LHeader a9l;
-    fvx_lseek(&file, arm9s->offset);
-    if ((fvx_read(&file, &a9l, sizeof(FirmA9LHeader), &btr) != FR_OK) ||
-        (DecryptA9LHeader(&a9l) != 0) || (fvx_lseek(&file, arm9s->offset) != FR_OK) ||
-        (fvx_write(&file, &a9l, sizeof(FirmA9LHeader), &btr) != FR_OK)) {
-        fvx_close(&file);
+    // write decrypted FIRM to the destination file
+    if (fvx_qwrite(dest, firm_buffer, 0, firm_size, NULL) != FR_OK) {
+        free(firm_buffer);
         return 1;
     }
     
-    // calculate new hash for ARM9 section 
-    fvx_lseek(&file, arm9s->offset);
-    sha_init(SHA256_MODE);
-    for (u32 i = 0; i < arm9s->size; i += MAIN_BUFFER_SIZE) {
-        u32 read_bytes = min(MAIN_BUFFER_SIZE, (arm9s->size - i));
-        if ((fvx_read(&file, MAIN_BUFFER, read_bytes, &btr) != FR_OK) || (btr != read_bytes)) {
-            fvx_close(&file);
-            return 1;
-        }
-        sha_update(MAIN_BUFFER, read_bytes);
-    }
-    sha_get(arm9s->hash);
-    
-    // write back FIRM header
-    fvx_lseek(&file, 0);
-    memcpy(firm.dec_magic, dec_magic, sizeof(dec_magic));
-    firm.entry_arm9 = ARM9ENTRY_FIX(&firm);
-    if (fvx_write(&file, &firm, sizeof(FirmHeader), &btr) != FR_OK) {
-        fvx_close(&file);
-        return 1;
-    }
-    
-    fvx_close(&file);
+    free(firm_buffer);
     return 0;
 }
 
-u32 CryptCdnFile(const char* orig, const char* dest, u16 crypto) {
+u32 CryptCdnFileBuffered(const char* orig, const char* dest, u16 crypto, void* buffer) {
     bool inplace = (strncmp(orig, dest, 256) == 0);
-    TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
+    TitleMetaData* tmd = (TitleMetaData*) buffer;
     TmdContentChunk* content_list = (TmdContentChunk*) (tmd + 1);
-    Ticket* ticket = (Ticket*) (TEMP_BUFFER + TMD_SIZE_MAX);
-    u8 titlekey[0x10] = { 0xFF };
     
     // get name
     char* fname;
@@ -945,6 +1075,7 @@ u32 CryptCdnFile(const char* orig, const char* dest, u16 crypto) {
     if (!strrchr(fname, '.')) {
         char* name_tmd;
         strncpy(path_tmd, orig, 256);
+        path_tmd[255] = '\0';
         name_tmd = strrchr(path_tmd, '/');
         if (!name_tmd) return 1; // will not happen
         name_tmd++;
@@ -953,13 +1084,15 @@ u32 CryptCdnFile(const char* orig, const char* dest, u16 crypto) {
     } else tmd = NULL;
     
     // load or build ticket
-    if (LoadCdnTicketFile(ticket, orig) != 0) {
-        if (!tmd || (BuildFakeTicket(ticket, tmd->title_id) != 0)) return 1;
-        if (FindTitleKey(ticket, tmd->title_id) != 0) return 1;
+    Ticket ticket;
+    if (LoadCdnTicketFile(&ticket, orig) != 0) {
+        if (!tmd || (BuildFakeTicket(&ticket, tmd->title_id) != 0)) return 1;
+        if (FindTitleKey(&ticket, tmd->title_id) != 0) return 1;
     }
     
     // get titlekey
-    if (GetTitleKey(titlekey, ticket) != 0)
+    u8 titlekey[0x10] = { 0xFF };
+    if (GetTitleKey(titlekey, &ticket) != 0)
         return 1;
     
     // find (build fake) content chunk
@@ -984,13 +1117,22 @@ u32 CryptCdnFile(const char* orig, const char* dest, u16 crypto) {
     if (CryptNcchNcsdBossFirmFile(orig, dest, GAME_NUSCDN, crypto, 0, 0, chunk, titlekey) != 0)
         return 1;
     
-    if (inplace && tmd) {
-        UINT bw; // in that case, write the change to the TMD file, too
+    if (inplace && tmd) { // in that case, write the change to the TMD file, too
         u32 offset = ((u8*) chunk) - ((u8*) tmd);
-        fvx_qwrite(path_tmd, chunk, offset, sizeof(TmdContentChunk), &bw);
+        fvx_qwrite(path_tmd, chunk, offset, sizeof(TmdContentChunk), NULL);
     }
     
     return 0;
+}
+
+u32 CryptCdnFile(const char* orig, const char* dest, u16 crypto) {
+    void* buffer = (void*) malloc(TMD_SIZE_MAX);
+    if (!buffer) return 1;
+    
+    u32 ret = CryptCdnFileBuffered(orig, dest, crypto, buffer);
+    
+    free(buffer);
+    return ret;
 }
 
 u32 CryptGameFile(const char* path, bool inplace, bool encrypt) {
@@ -1082,6 +1224,14 @@ u32 InsertCiaContent(const char* path_cia, const char* path_content, u32 offset,
         fvx_lseek(&ofile, offset);
     }
     
+    // allocate buffer
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) {
+        fvx_close(&ofile);
+        fvx_close(&dfile);
+        return 1;
+    }
+    
     // main loop starts here
     u8 ctr_in[16];
     u8 ctr_out[16];
@@ -1089,22 +1239,23 @@ u32 InsertCiaContent(const char* path_cia, const char* path_content, u32 offset,
     GetTmdCtr(ctr_in, chunk);
     GetTmdCtr(ctr_out, chunk);
     if (!ShowProgress(0, 0, path_content)) ret = 1;
-    for (u32 i = 0; (i < size) && (ret == 0); i += MAIN_BUFFER_SIZE) {
-        u32 read_bytes = min(MAIN_BUFFER_SIZE, (size - i));
-        if (fvx_read(&ofile, MAIN_BUFFER, read_bytes, &bytes_read) != FR_OK) ret = 1;
-        if (cdn_decrypt && (DecryptCiaContentSequential(MAIN_BUFFER, read_bytes, ctr_in, titlekey) != 0)) ret = 1;
-        if (ncch_decrypt && (DecryptNcchSequential(MAIN_BUFFER, i, read_bytes) != 0)) ret = 1;
-        if ((i == 0) && cxi_fix && (SetNcchSdFlag(MAIN_BUFFER) != 0)) ret = 1;
+    for (u32 i = 0; (i < size) && (ret == 0); i += STD_BUFFER_SIZE) {
+        u32 read_bytes = min(STD_BUFFER_SIZE, (size - i));
+        if (fvx_read(&ofile, buffer, read_bytes, &bytes_read) != FR_OK) ret = 1;
+        if (cdn_decrypt && (DecryptCiaContentSequential(buffer, read_bytes, ctr_in, titlekey) != 0)) ret = 1;
+        if (ncch_decrypt && (DecryptNcchSequential(buffer, i, read_bytes) != 0)) ret = 1;
+        if ((i == 0) && cxi_fix && (SetNcchSdFlag(buffer) != 0)) ret = 1;
         if (i == 0) sha_init(SHA256_MODE);
-        sha_update(MAIN_BUFFER, read_bytes);
-        if (cia_encrypt && (EncryptCiaContentSequential(MAIN_BUFFER, read_bytes, ctr_out, titlekey) != 0)) ret = 1;
-        if (fvx_write(&dfile, MAIN_BUFFER, read_bytes, &bytes_written) != FR_OK) ret = 1;
+        sha_update(buffer, read_bytes);
+        if (cia_encrypt && (EncryptCiaContentSequential(buffer, read_bytes, ctr_out, titlekey) != 0)) ret = 1;
+        if (fvx_write(&dfile, buffer, read_bytes, &bytes_written) != FR_OK) ret = 1;
         if ((read_bytes != bytes_read) || (bytes_read != bytes_written)) ret = 1;
         if (!ShowProgress(offset + i + read_bytes, fsize, path_content)) ret = 1;
     }
     u8 hash[0x20];
     sha_get(hash);
     
+    free(buffer);
     fvx_close(&ofile);
     fvx_close(&dfile);
     
@@ -1129,10 +1280,9 @@ u32 InsertCiaMeta(const char* path_cia, CiaMeta* meta) {
     return (res) ? 0 : 1;
 }
 
-u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_legit, bool cdn) {
+u32 BuildCiaFromTmdFileBuffered(const char* path_tmd, const char* path_cia, bool force_legit, bool cdn, void* buffer) {
     const u8 dlc_tid_high[] = { DLC_TID_HIGH };
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
-    CiaMeta* meta = (CiaMeta*) (TEMP_BUFFER + sizeof(CiaStub));
+    CiaStub* cia = (CiaStub*) buffer;
     
     // Init progress bar
     if (!ShowProgress(0, 0, path_tmd)) return 1;
@@ -1159,10 +1309,28 @@ u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_l
     Ticket* ticket = &(cia->ticket);
     bool src_emunand = ((*path_tmd == 'B') || (*path_tmd == '4'));
     if (force_legit) {
+        Ticket ticket_fake; // backup of the fake ticket
+        memcpy(&ticket_fake, ticket, sizeof(Ticket));
         if ((cdn && (LoadCdnTicketFile(ticket, path_tmd) != 0)) ||
             (!cdn && (FindTicket(ticket, title_id, true, src_emunand) != 0))) {
             ShowPrompt(false, "ID %016llX\nLegit ticket not found.", getbe64(title_id));
             return 1;
+        }
+        if (getbe32(ticket->console_id)) {
+            static u32 default_action = 0;
+            const char* optionstr[2] =
+                {"Use personalized ticket (legit)", "Use generic ticket (not legit)"};
+            if (!default_action) {
+                default_action = ShowSelectPrompt(2, optionstr,
+                    "ID %016llX\nLegit ticket is personalized.\nChoose default action:", getbe64(title_id));
+                ShowProgress(0, 0, path_tmd);
+            }
+            if (!default_action) return 1;
+            else if (default_action == 2) {
+                memcpy(ticket_fake.titlekey, ticket->titlekey, 0x10);
+                ticket_fake.commonkey_idx = ticket->commonkey_idx; 
+                memcpy(ticket, &ticket_fake, sizeof(Ticket));
+            }
         }
     } else if (cdn) {
         if ((LoadCdnTicketFile(ticket, path_tmd) != 0) &&
@@ -1171,13 +1339,12 @@ u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_l
             return 1;
         }
     } else {
+        Ticket ticket_tmp;
         if ((FindTitleKey(ticket, title_id) != 0) && 
-            (FindTicket(ticket, title_id, false, src_emunand) == 0) &&
-            (getbe32(ticket->console_id) || getbe32(ticket->eshop_id))) {
-            // if ticket found: wipe private data
-            memset(ticket->console_id, 0, 4); // zero out console id
-            memset(ticket->eshop_id, 0, 4); // zero out eshop id
-            memset(ticket->ticket_id, 0, 8); // zero out ticket id
+            (FindTicket(&ticket_tmp, title_id, false, src_emunand) == 0)) {
+            // we just copy the titlekey from a valid ticket (if we can)
+            memcpy(ticket->titlekey, ticket_tmp.titlekey, 0x10);
+            ticket->commonkey_idx = ticket_tmp.commonkey_idx;
         }
     }
     
@@ -1185,28 +1352,27 @@ u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_l
     char path_content[256];
     char* name_content;
     strncpy(path_content, path_tmd, 256);
+    path_content[255] = '\0';
     name_content = strrchr(path_content, '/');
     if (!name_content) return 1; // will not happen
     name_content++;
     
+    u8 present[TMD_MAX_CONTENTS];
+    memset(present, 1, sizeof(present));
+
     // DLC? Check for missing contents first!
-    if (dlc) for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS);) {
+    if (dlc) for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
         FILINFO fno;
         TmdContentChunk* chunk = &(content_list[i]);
         snprintf(name_content, 256 - (name_content - path_content),
             (cdn) ? "%08lx" : (dlc && !cdn) ? "00000000/%08lx.app" : "%08lx.app", getbe32(chunk->id));
-        if ((fvx_stat(path_content, &fno) != FR_OK) || (fno.fsize != (u32) getbe64(chunk->size)))
-            memmove(chunk, chunk + 1, ((--content_count) - i) * sizeof(TmdContentChunk));
-        else i++;
-    }
-    if (!content_count) return 1;
-    if (content_count < (u16) getbe16(tmd->content_count)) {
-        if (!ShowPrompt(true, "ID %016llX\nIncomplete DLC (%u missing)\nContinue?",
-            getbe64(title_id), getbe16(tmd->content_count) - content_count)) return 1;
-        tmd->content_count[0] = (content_count >> 8) & 0xFF;
-        tmd->content_count[1] = content_count & 0xFF;
-        memcpy(tmd->contentinfo[0].cmd_count, tmd->content_count, 2);
-        if (FixCiaHeaderForTmd(&(cia->header), tmd) != 0) return 1;
+        if ((fvx_stat(path_content, &fno) != FR_OK) || (fno.fsize != (u32) getbe64(chunk->size))) {
+            present[i] = 0;
+
+            u16 index = getbe16(chunk->index);
+            cia->header.size_content -= getbe64(chunk->size);
+            cia->header.content_index[index/8] &= ~(1 << (7-(index%8)));
+        }
     }
     
     // insert contents
@@ -1215,26 +1381,32 @@ u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_l
     if (WriteCiaStub(cia, path_cia) != 0) return 1;
     for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
         TmdContentChunk* chunk = &(content_list[i]);
-        snprintf(name_content, 256 - (name_content - path_content),
-            (cdn) ? "%08lx" : (dlc && !cdn) ? "00000000/%08lx.app" : "%08lx.app", getbe32(chunk->id));
-        if (InsertCiaContent(path_cia, path_content, 0, (u32) getbe64(chunk->size), chunk, titlekey, force_legit, false, cdn) != 0) {
-            ShowPrompt(false, "ID %016llX.%08lX\nInsert content failed", getbe64(title_id), getbe32(chunk->id));
-            return 1;
+        if (present[i]) {
+            snprintf(name_content, 256 - (name_content - path_content),
+                (cdn) ? "%08lx" : (dlc && !cdn) ? "00000000/%08lx.app" : "%08lx.app", getbe32(chunk->id));
+            if (InsertCiaContent(path_cia, path_content, 0, (u32) getbe64(chunk->size), chunk, titlekey, force_legit, false, cdn) != 0) {
+                ShowPrompt(false, "ID %016llX.%08lX\nInsert content failed", getbe64(title_id), getbe32(chunk->id));
+                return 1;
+            }
         }
     }
     
     // try to build & insert meta, but ignore result
-    if (content_count && cdn) {
-        if (!force_legit || !(getbe16(content_list->type) & 0x01)) {
-            CiaInfo info;
-            GetCiaInfo(&info, &(cia->header));
-            if ((LoadNcchMeta(meta, path_cia, info.offset_content) == 0) && (InsertCiaMeta(path_cia, meta) == 0))
+    CiaMeta* meta = (CiaMeta*) malloc(sizeof(CiaMeta));
+    if (meta) {
+        if (content_count && cdn) {
+            if (!force_legit || !(getbe16(content_list->type) & 0x01)) {
+                CiaInfo info;
+                GetCiaInfo(&info, &(cia->header));
+                if ((LoadNcchMeta(meta, path_cia, info.offset_content) == 0) && (InsertCiaMeta(path_cia, meta) == 0))
+                    cia->header.size_meta = CIA_META_SIZE;
+            }
+        } else if (content_count) {
+            snprintf(name_content, 256 - (name_content - path_content), "%08lx.app", getbe32(content_list->id));
+            if ((LoadNcchMeta(meta, path_content, 0) == 0) && (InsertCiaMeta(path_cia, meta) == 0))
                 cia->header.size_meta = CIA_META_SIZE;
         }
-    } else if (content_count) {
-        snprintf(name_content, 256 - (name_content - path_content), "%08lx.app", getbe32(content_list->id));
-        if ((LoadNcchMeta(meta, path_content, 0) == 0) && (InsertCiaMeta(path_cia, meta) == 0))
-            cia->header.size_meta = CIA_META_SIZE;
+        free(meta);
     }
     
     // write the CIA stub (take #2)
@@ -1244,28 +1416,39 @@ u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_l
     return 0;
 }
 
+u32 BuildCiaFromTmdFile(const char* path_tmd, const char* path_cia, bool force_legit, bool cdn) {
+    void* buffer = (void*) malloc(sizeof(CiaStub));
+    if (!buffer) return 1;
+    
+    u32 ret = BuildCiaFromTmdFileBuffered(path_tmd, path_cia, force_legit, cdn, buffer);
+    
+    free(buffer);
+    return ret;
+}
+
 u32 BuildCiaFromNcchFile(const char* path_ncch, const char* path_cia) {
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
-    CiaMeta* meta = (CiaMeta*) (void*) (cia + 1);
-    NcchExtHeader* exthdr = (NcchExtHeader*) (void*) (meta + 1);
+    NcchExtHeader exthdr;
     NcchHeader ncch;
     u8 title_id[8];
     u32 save_size = 0;
+    bool has_exthdr = false;
     
     // Init progress bar
     if (!ShowProgress(0, 0, path_ncch)) return 1;
     
     // load NCCH header / extheader, get save size && title id
-    if (LoadNcchHeaders(&ncch, exthdr, NULL, path_ncch, 0) == 0) {
-        save_size = getle32(exthdr->sys_info);
-    } else {
-        exthdr = NULL;
-        if (LoadNcchHeaders(&ncch, NULL, NULL, path_ncch, 0) != 0) return 1;
+    if (LoadNcchHeaders(&ncch, &exthdr, NULL, path_ncch, 0) == 0) {
+        save_size = (u32) exthdr.savedata_size;
+        has_exthdr = true;
+    } else if (LoadNcchHeaders(&ncch, NULL, NULL, path_ncch, 0) != 0) {
+        return 1;
     }
     for (u32 i = 0; i < 8; i++)
         title_id[i] = (ncch.programId >> ((7-i)*8)) & 0xFF;
     
     // build the CIA stub
+    CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
+    if (!cia) return 1;
     memset(cia, 0, sizeof(CiaStub));
     if ((BuildCiaHeader(&(cia->header)) != 0) ||
         (BuildCiaCert(cia->cert) != 0) ||
@@ -1273,35 +1456,41 @@ u32 BuildCiaFromNcchFile(const char* path_ncch, const char* path_cia) {
         (BuildFakeTmd(&(cia->tmd), title_id, 1, save_size)) ||
         (FixCiaHeaderForTmd(&(cia->header), &(cia->tmd)) != 0) ||
         (WriteCiaStub(cia, path_cia) != 0)) {
+        free(cia);
         return 1;
     }
     
     // insert NCCH content
     TmdContentChunk* chunk = cia->content_list;
     memset(chunk, 0, sizeof(TmdContentChunk)); // nothing else to do
-    if (InsertCiaContent(path_cia, path_ncch, 0, 0, chunk, NULL, false, true, false) != 0)
+    if (InsertCiaContent(path_cia, path_ncch, 0, 0, chunk, NULL, false, true, false) != 0) {
+        free(cia);
         return 1;
+    }
     
     // optional stuff (proper titlekey / meta data)
-    FindTitleKey((&cia->ticket), title_id);
-    if (exthdr && (BuildCiaMeta(meta, exthdr, NULL) == 0) &&
+    CiaMeta* meta = (CiaMeta*) malloc(sizeof(CiaMeta));
+    if (meta && has_exthdr && (BuildCiaMeta(meta, &exthdr, NULL) == 0) &&
         (LoadExeFsFile(meta->smdh, path_ncch, 0, "icon", sizeof(meta->smdh), NULL) == 0) &&
         (InsertCiaMeta(path_cia, meta) == 0))
         cia->header.size_meta = CIA_META_SIZE;
+    free(meta);
     
     // write the CIA stub (take #2)
+    FindTitleKey((&cia->ticket), title_id);
     if ((FixTmdHashes(&(cia->tmd)) != 0) ||
         (FixCiaHeaderForTmd(&(cia->header), &(cia->tmd)) != 0) ||
-        (WriteCiaStub(cia, path_cia) != 0))
+        (WriteCiaStub(cia, path_cia) != 0)) {
+        free(cia);
         return 1;
+    }
     
+    free(cia);
     return 0;
 }
 
 u32 BuildCiaFromNcsdFile(const char* path_ncsd, const char* path_cia) {
-    CiaStub* cia = (CiaStub*) TEMP_BUFFER;
-    CiaMeta* meta = (CiaMeta*) (void*) (cia + 1);
-    NcchExtHeader* exthdr = (NcchExtHeader*) (void*) (meta + 1);
+    NcchExtHeader exthdr;
     NcsdHeader ncsd;
     NcchHeader ncch;
     u8 title_id[8];
@@ -1319,11 +1508,13 @@ u32 BuildCiaFromNcsdFile(const char* path_ncsd, const char* path_cia) {
         title_id[i] = (ncsd.mediaId >> ((7-i)*8)) & 0xFF;
     
     // load first content NCCH / extheader
-    if (LoadNcchHeaders(&ncch, exthdr, NULL, path_ncsd, NCSD_CNT0_OFFSET) != 0)
+    if (LoadNcchHeaders(&ncch, &exthdr, NULL, path_ncsd, NCSD_CNT0_OFFSET) != 0)
         return 1;
-    save_size = getle32(exthdr->sys_info);
+    save_size = (u32) exthdr.savedata_size;
     
     // build the CIA stub
+    CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
+    if (!cia) return 1;
     memset(cia, 0, sizeof(CiaStub));
     if ((BuildCiaHeader(&(cia->header)) != 0) ||
         (BuildCiaCert(cia->cert) != 0) ||
@@ -1331,6 +1522,7 @@ u32 BuildCiaFromNcsdFile(const char* path_ncsd, const char* path_cia) {
         (BuildFakeTmd(&(cia->tmd), title_id, content_count, save_size)) ||
         (FixCiaHeaderForTmd(&(cia->header), &(cia->tmd)) != 0) ||
         (WriteCiaStub(cia, path_cia) != 0)) {
+        free(cia);
         return 1;
     }
     
@@ -1343,23 +1535,30 @@ u32 BuildCiaFromNcsdFile(const char* path_ncsd, const char* path_cia) {
         if (!size) continue;
         memset(chunk, 0, sizeof(TmdContentChunk));
         chunk->id[3] = chunk->index[1] = i;
-        if (InsertCiaContent(path_cia, path_ncsd, offset, size, chunk++, NULL, false, (i == 0), false) != 0)
+        if (InsertCiaContent(path_cia, path_ncsd, offset, size, chunk++, NULL, false, (i == 0), false) != 0) {
+            free(cia);
             return 1;
+        }
     }
     
     // optional stuff (proper titlekey / meta data)
-    FindTitleKey(&(cia->ticket), title_id);
-    if ((BuildCiaMeta(meta, exthdr, NULL) == 0) &&
+    CiaMeta* meta = (CiaMeta*) malloc(sizeof(CiaMeta));
+    if (meta && (BuildCiaMeta(meta, &exthdr, NULL) == 0) &&
         (LoadExeFsFile(meta->smdh, path_ncsd, NCSD_CNT0_OFFSET, "icon", sizeof(meta->smdh), NULL) == 0) &&
         (InsertCiaMeta(path_cia, meta) == 0))
         cia->header.size_meta = CIA_META_SIZE;
+    if (meta) free(meta);
     
     // write the CIA stub (take #2)
+    FindTitleKey(&(cia->ticket), title_id);
     if ((FixTmdHashes(&(cia->tmd)) != 0) ||
         (FixCiaHeaderForTmd(&(cia->header), &(cia->tmd)) != 0) ||
-        (WriteCiaStub(cia, path_cia) != 0))
+        (WriteCiaStub(cia, path_cia) != 0)) {
+        free(cia);
         return 1;
+    }
     
+    free(cia);
     return 0;
 }
 
@@ -1434,47 +1633,240 @@ u32 DumpCxiSrlFromTmdFile(const char* path) {
 }
 
 u32 ExtractCodeFromCxiFile(const char* path, const char* path_out, char* extstr) {
-    u8* code = (u8*) TEMP_BUFFER;
-    u32 code_max_size = TEMP_BUFFER_EXTSIZE; // uses the extended temp buffer size
+    u64 filetype = IdentifyFileType(path);
+    char dest[256];
+    if (!path_out && (fvx_rmkdir(OUTPUT_PATH) != FR_OK)) return 1;
+    strncpy(dest, path_out ? path_out : OUTPUT_PATH, 256);
+    dest[255] = '\0';
+    if (!CheckWritePermissions(dest)) return 1;
     
+    // NCSD handling
+    u32 ncch_offset = 0;
+    if (filetype & GAME_NCSD) {
+        NcsdHeader ncsd;
+        if (LoadNcsdHeader(&ncsd, path) == 0)
+            ncch_offset = ncsd.partitions[0].offset * NCSD_MEDIA_UNIT;
+        else return 1;
+    }
+
+    // load all required headers
     NcchHeader ncch;
     NcchExtHeader exthdr;
+    ExeFsHeader exefs;
+    if (LoadNcchHeaders(&ncch, &exthdr, &exefs, path, ncch_offset) != 0) return 1;
     
-    // load ncch, exthdr, .code
-    u32 code_size;
-    if ((LoadNcchHeaders(&ncch, &exthdr, NULL, path, 0) != 0) ||
-        ((LoadExeFsFile(code, path, 0, EXEFS_CODE_NAME, code_max_size, &code_size) != 0) &&
-         (LoadExeFsFile(code, path, 0, ".firm", code_max_size, &code_size) != 0)))
+    // find ".code" or ".firm" inside the ExeFS header
+    u32 code_size = 0;
+    u32 code_offset = 0;
+    for (u32 i = 0; i < 10; i++) {
+        if (exefs.files[i].size &&
+            ((strncmp(exefs.files[i].name, EXEFS_CODE_NAME, 8) == 0) ||
+             (strncmp(exefs.files[i].name, ".firm", 8) == 0))) {
+            code_size = exefs.files[i].size;
+            code_offset = (ncch.offset_exefs * NCCH_MEDIA_UNIT) + sizeof(ExeFsHeader) + exefs.files[i].offset;
+        }
+    }
+    
+    // if code is compressed: find decompressed size
+    u32 code_max_size = code_size;
+    if (exthdr.flag & 0x1) {
+        u8 footer[8];
+        if (code_size < 8) return 1;
+        if ((fvx_qread(path, footer, ncch_offset + code_offset + code_size - 8, 8, NULL) != FR_OK) ||
+            (DecryptNcch(footer, code_offset + code_size - 8, 8, &ncch, &exefs) != 0))
+            return 1;
+        u32 unc_size = GetCodeLzssUncompressedSize(footer, code_size);
+        code_max_size = max(code_size, unc_size);
+    }
+    
+    // allocate memory
+    u8* code = (u8*) malloc(code_max_size);
+    if (!code) {
+        ShowPrompt(false, "Out of memory.");
         return 1;
+    }
+    
+    // load .code
+    if ((fvx_qread(path, code, ncch_offset + code_offset, code_size, NULL) != FR_OK) ||
+        (DecryptNcch(code, code_offset, code_size, &ncch, &exefs) != 0)) {
+        free(code);
+        return 1;
+    }
     
     // decompress code (only if required)
-    if ((exthdr.flag & 0x1) && (DecompressCodeLzss(code, &code_size, code_max_size) != 0))
+    if ((exthdr.flag & 0x1) && (DecompressCodeLzss(code, &code_size, code_max_size) != 0)) {
+        free(code);
         return 1;
+    }
     
-    // decide extension
+    // finalize output path (if not already final)
     char* ext = EXEFS_CODE_NAME;
     if (code_size >= 0x200) {
         if (ValidateFirmHeader((FirmHeader*)(void*) code, code_size) == 0) ext = ".firm";
         else if (ValidateAgbHeader((AgbHeader*)(void*) code) == 0) ext = ".gba";
     }
     if (extstr) strncpy(extstr, ext, 7);
-    
-    // build or take over output path
-    char dest[256];
-    if (!path_out) {
-        // ensure the output dir exists
-        if (fvx_rmkdir(OUTPUT_PATH) != FR_OK) return 1;
-        snprintf(dest, 256, OUTPUT_PATH "/%016llX%s%s", ncch.programId, (exthdr.flag & 0x1) ? ".dec" : "", ext);
-    } else strncpy(dest, path_out, 256);
-    if (!CheckWritePermissions(dest)) return 1;
+    if (!path_out) snprintf(dest, 256, OUTPUT_PATH "/%016llX%s%s", ncch.programId, (exthdr.flag & 0x1) ? ".dec" : "", ext);
     
     // write output file
     fvx_unlink(dest);
     if (fvx_qwrite(dest, code, 0, code_size, NULL) != FR_OK) {
         fvx_unlink(dest);
+        free(code);
         return 1;
     }
+    
+    free(code);
+    return 0;
+}
+
+u32 CompressCode(const char* path, const char* path_out) {
+    char dest[256];
+    
+    strncpy(dest, path_out ? path_out : OUTPUT_PATH, 255);
+    if (!CheckWritePermissions(dest)) return 1;
+    if (!path_out && (fvx_rmkdir(OUTPUT_PATH) != FR_OK)) return 1;
+    
+    // allocate memory
+    u32 code_dec_size = fvx_qsize(path);
+    u8* code_dec = (u8*) malloc(code_dec_size);
+    u32 code_cmp_size = code_dec_size;
+    u8* code_cmp = (u8*) malloc(code_cmp_size);
+    if (!code_dec || !code_cmp) {
+        if (code_dec != NULL) free(code_dec);
+        if (code_cmp != NULL) free(code_cmp);
+        ShowPrompt(false, "Out of memory.");
+        return 1;
+    }
+    
+    // load code.bin and compress code
+    if ((fvx_qread(path, code_dec, 0, code_dec_size, NULL) != FR_OK) ||
+        (!CompressCodeLzss(code_dec, code_dec_size, code_cmp, &code_cmp_size))) {
+        free(code_dec);
+        free(code_cmp);
+        return 1;
+    }
+    
+    // write output file
+    fvx_unlink(dest);
+    free(code_dec);
+    if (fvx_qwrite(dest, code_cmp, 0, code_cmp_size, NULL) != FR_OK) {
+        fvx_unlink(dest);
+        free(code_cmp);
+        return 1;
+    }
+    
+    free(code_cmp);
+    return 0;
+}
+
+u32 ExtractDataFromDisaDiff(const char* path) {
+    char dest[256];
+    u32 ret = 0;
+    
+    // build output name
+    char* name = strrchr(path, '/');
+    if (!name) return 1;
+    snprintf(dest, 256, "%s/%s", OUTPUT_PATH, ++name);
+    
+    // replace extension
+    char* dot = strrchr(dest, '.');
+    if (!dot || (dot < strrchr(dest, '/')))
+        dot = dest + strnlen(dest, 256);
+    snprintf(dot, 16, ".%s", "bin");
         
+    if (!CheckWritePermissions(dest)) return 1;
+    
+    // prepare DISA / DIFF read
+    DisaDiffReaderInfo info;
+    u8* lvl2_cache = NULL;
+    if ((GetDisaDiffReaderInfo(path, &info, false) != 0) ||
+        !(lvl2_cache = (u8*) malloc(info.size_dpfs_lvl2)) ||
+        (BuildDisaDiffDpfsLvl2Cache(path, &info, lvl2_cache, info.size_dpfs_lvl2) != 0)) {
+        if (lvl2_cache) free(lvl2_cache);
+        return 1;
+    }
+    
+    // prepare buffer
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) {
+        free(lvl2_cache);
+        return 1;
+    }
+    
+    // open output file
+    FIL file;
+    if (fvx_open(&file, dest, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        free(buffer);
+        free(lvl2_cache);
+        return 1;
+    }
+    
+    // actually extract the partition
+    u32 total_size = 0;
+    for (u32 i = 0; ret == 0; i += STD_BUFFER_SIZE) {
+        UINT btr;
+        u32 add_size = ReadDisaDiffIvfcLvl4(path, &info, i, STD_BUFFER_SIZE, buffer);
+        if (!add_size) break;
+        if ((fvx_write(&file, buffer, add_size, &btr) != FR_OK) || (btr != add_size)) ret = 1;
+        total_size += add_size;
+    }
+    
+    // wrap it up
+    if (!total_size) ret = 1;
+    free(buffer);
+    free(lvl2_cache);
+    fvx_close(&file);
+    return ret;
+}
+
+u64 GetGameFileTrimmedSize(const char* path) {
+    u64 filetype = IdentifyFileType(path);
+    u64 trimsize = 0;
+
+    if (filetype & GAME_NDS) {
+        TwlHeader hdr;
+        if (fvx_qread(path, &hdr, 0, sizeof(TwlHeader), NULL) != FR_OK)
+            return 0;
+        if (hdr.unit_code != 0x00) // DSi or NDS+DSi
+            trimsize = hdr.ntr_twl_rom_size;
+        else trimsize = hdr.ntr_rom_size; // regular NDS
+    } else {
+        u8 hdr[0x200];
+        if (fvx_qread(path, &hdr, 0, 0x200, NULL) != FR_OK)
+            return 0;
+        if (filetype & IMG_NAND)
+            trimsize = GetNandNcsdMinSizeSectors((NandNcsdHeader*) (void*) hdr) * 0x200;
+        else if (filetype & SYS_FIRM)
+            trimsize = GetFirmSize((FirmHeader*) (void*) hdr);
+        else if (filetype & GAME_NCSD)
+            trimsize = GetNcsdTrimmedSize((NcsdHeader*) (void*) hdr);
+        else if (filetype & GAME_NCCH)
+            trimsize = ((NcchHeader*) (void*) hdr)->size * NCCH_MEDIA_UNIT;
+    }
+
+    // safety check for file size
+    if (trimsize > fvx_qsize(path))
+        trimsize = 0;
+
+    return trimsize;
+}
+
+u32 TrimGameFile(const char* path) {
+    u64 trimsize = GetGameFileTrimmedSize(path);
+    if (!trimsize) return 1;
+
+    // actual truncate routine - FAT only
+    FIL fp;
+    if (fx_open(&fp, path, FA_WRITE | FA_OPEN_EXISTING) != FR_OK)
+        return 1;
+    if ((f_lseek(&fp, (u32) trimsize) != FR_OK) || (f_truncate(&fp) != FR_OK)) {
+        fx_close(&fp);
+        return 1;
+    }
+    fx_close(&fp);
+
+    // all done
     return 0;
 }
 
@@ -1514,10 +1906,10 @@ u32 LoadSmdhFromGameFile(const char* path, Smdh* smdh) {
 u32 ShowSmdhTitleInfo(Smdh* smdh) {
     const u8 smdh_magic[] = { SMDH_MAGIC };
     const u32 lwrap = 24;
-    u8* icon = (u8*) (TEMP_BUFFER + sizeof(Smdh));
-    char* desc_l = (char*) icon + SMDH_SIZE_ICON_BIG;
-    char* desc_s = (char*) desc_l + SMDH_SIZE_DESC_LONG;
-    char* pub = (char*) desc_s + SMDH_SIZE_DESC_SHORT;
+    u8 icon[SMDH_SIZE_ICON_BIG];
+    char desc_l[SMDH_SIZE_DESC_LONG+1];
+    char desc_s[SMDH_SIZE_DESC_SHORT+1];
+    char pub[SMDH_SIZE_PUBLISHER+1];
     if ((memcmp(smdh->magic, smdh_magic, 4) != 0) ||
         (GetSmdhIconBig(icon, smdh) != 0) ||
         (GetSmdhDescLong(desc_l, smdh) != 0) ||
@@ -1528,21 +1920,21 @@ u32 ShowSmdhTitleInfo(Smdh* smdh) {
     WordWrapString(desc_s, lwrap);
     WordWrapString(pub, lwrap);
     ShowIconString(icon, SMDH_DIM_ICON_BIG, SMDH_DIM_ICON_BIG, "%s\n%s\n%s", desc_l, desc_s, pub);
-    InputWait(0);
+    while(!(InputWait(0) & (BUTTON_A | BUTTON_B)));
     ClearScreenF(true, false, COLOR_STD_BG);
     return 0;
 }
 
 u32 ShowTwlIconTitleInfo(TwlIconData* twl_icon) {
     const u32 lwrap = 24;
-    u8* icon = (u8*) (TEMP_BUFFER + sizeof(TwlIconData));
-    char* desc = (char*) icon + TWLICON_SIZE_ICON;
+    u8 icon[TWLICON_SIZE_ICON];
+    char desc[TWLICON_SIZE_DESC+1];
     if ((GetTwlIcon(icon, twl_icon) != 0) ||
         (GetTwlTitle(desc, twl_icon) != 0))
         return 1;
     WordWrapString(desc, lwrap);
     ShowIconString(icon, TWLICON_DIM_ICON, TWLICON_DIM_ICON, "%s", desc);
-    InputWait(0);
+    while(!(InputWait(0) & (BUTTON_A | BUTTON_B)));
     ClearScreenF(true, false, COLOR_STD_BG);
     return 0;
 }
@@ -1552,16 +1944,13 @@ u32 ShowGbaFileTitleInfo(const char* path) {
     if ((fvx_qread(path, &agb, 0, sizeof(AgbHeader), NULL) != FR_OK) ||
         (ValidateAgbHeader(&agb) != 0)) return 1;
     ShowString("%.12s (AGB-%.4s)\n%s", agb.game_title, agb.game_code, AGB_DESTSTR(agb.game_code));
-    InputWait(0);
+    while(!(InputWait(0) & (BUTTON_A | BUTTON_B)));
     ClearScreenF(true, false, COLOR_STD_BG);
     return 0;
     
 }
 
 u32 ShowGameFileTitleInfo(const char* path) {
-    Smdh* smdh = (Smdh*) (void*) TEMP_BUFFER;
-    TwlIconData* twl_icon = (TwlIconData*) (void*) TEMP_BUFFER;
-    
     char path_content[256];
     u64 itype = IdentifyFileType(path); // initial type
     if (itype & GAME_TMD) {
@@ -1569,13 +1958,88 @@ u32 ShowGameFileTitleInfo(const char* path) {
         path = path_content;
     }
     
+    void* buffer = (void*) malloc(max(sizeof(Smdh), sizeof(TwlIconData)));
+    Smdh* smdh = (Smdh*) buffer;
+    TwlIconData* twl_icon = (TwlIconData*) buffer;
+    
     // try loading SMDH, then try NDS / GBA
+    u32 ret = 1;
     if (LoadSmdhFromGameFile(path, smdh) == 0)
-        return ShowSmdhTitleInfo(smdh);
+        ret = ShowSmdhTitleInfo(smdh);
     else if ((LoadTwlMetaData(path, NULL, twl_icon) == 0) ||
         ((itype & GAME_TAD) && (fvx_qread(path, twl_icon, TAD_BANNER_OFFSET, sizeof(TwlIconData), NULL) == FR_OK)))
-        return ShowTwlIconTitleInfo(twl_icon);
-    else return ShowGbaFileTitleInfo(path);
+        ret = ShowTwlIconTitleInfo(twl_icon);
+    else ret = ShowGbaFileTitleInfo(path);
+    
+    free(buffer);
+    return ret;
+}
+
+u32 ShowCiaCheckerInfo(const char* path) {
+	CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
+    if (!cia) return 1;
+    
+     // path string
+    char pathstr[32 + 1];
+    TruncateString(pathstr, path, 32, 8);
+    
+    // load CIA stub
+    if (LoadCiaStub(cia, path) != 0) {
+        ShowPrompt(false, "%s\nError: Probably not a CIA file", pathstr);
+        free(cia);
+        return 1;
+    }
+
+    // states: 0 -> invalid / 1 -> valid / badsig / 2 -> valid / goodsig
+    u32 state_ticket = 0;
+    u32 state_tmd = 0;
+    u32 content_count = getbe16(cia->tmd.content_count);
+    u32 content_found = 0;
+    u64 title_id = getbe64(cia->ticket.title_id);
+    u32 console_id = getbe32(cia->ticket.console_id);
+    bool missing_first = false;
+    bool is_dlc = ((title_id >> 32) == 0x0004008C);
+
+    // check ticket
+    if (ValidateTicket(&(cia->ticket)) == 0)
+    	state_ticket = (ValidateTicketSignature(&(cia->ticket)) == 0) ? 2 : 1;
+
+    // check tmd
+    if (ValidateTmd(&(cia->tmd)) == 0)
+    	state_tmd = (ValidateTmdSignature(&(cia->tmd)) == 0) ? 2 : 1;
+
+    // check for available contents
+    u8* cnt_index = cia->header.content_index;
+    for (u32 i = 0; (i < content_count) && (i < TMD_MAX_CONTENTS); i++) {
+        TmdContentChunk* chunk = &(cia->content_list[i]);
+        u16 index = getbe16(chunk->index);
+        if (cnt_index[index/8] & (1 << (7-(index%8)))) content_found++; 
+        else if (i == 0) missing_first = true;
+    }
+
+    // CIA type string
+    char typestr[32];
+    if (!state_ticket || !state_tmd || missing_first || (!is_dlc && (content_found != content_count)))
+    	snprintf(typestr, 32, "Possibly Broken");
+    else snprintf(typestr, 32, "%s %s%s",
+    	console_id ? "Personal" : "Universal",
+    	(state_ticket == 2) ? "Legit" : (state_tmd == 2) ? "Pirate Legit" : "Custom",
+    	is_dlc ? " DLC" : "");
+
+    // output results
+    s32 state_verify = -1;
+	while (true) {
+		if (!ShowPrompt(state_verify < 0, "%s\n%s CIA File\n \nTitle ID: %016llX\nConsole ID: %08lX\nContents in CIA: %lu/%lu\nTicket/TMD: %s/%s\nVerification: %s",
+			pathstr, typestr, title_id, console_id,
+			content_found, content_count,
+			(state_ticket == 0) ? "invalid" : (state_ticket == 2) ? "legit" : "illegit",
+			(state_tmd == 0) ? "invalid" : (state_tmd == 2) ? "legit" : "illegit",
+			(state_verify < 0) ? "pending\n \nProceed with verification?" : (state_verify == 0) ? "passed" : "failed") ||
+			(state_verify >= 0)) break;
+		state_verify = VerifyCiaFile(path);
+	}
+
+	return (state_ticket && state_tmd) ? 0 : 1; 
 }
 
 u32 BuildNcchInfoXorpads(const char* destdir, const char* path) {
@@ -1584,7 +2048,7 @@ u32 BuildNcchInfoXorpads(const char* destdir, const char* path) {
     UINT bt;
     
     if (!CheckWritePermissions(destdir)) return 1;
-    // warning: this will only build output dirs in the root dir (!!!)
+    // warning: this will only build output dirs in the root dir (!)
     if ((f_stat(destdir, NULL) != FR_OK) && (f_mkdir(destdir) != FR_OK))
         return 1;
     
@@ -1603,6 +2067,9 @@ u32 BuildNcchInfoXorpads(const char* destdir, const char* path) {
     version = GetNcchInfoVersion(&info);
     entry_size = (version == 3) ? NCCHINFO_V3_SIZE : sizeof(NcchInfoEntry);
     if (!version) ret = 1;
+    
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) ret = 1;
     for (u32 i = 0; (i < info.n_entries) && (ret == 0); i++) {
         NcchInfoEntry entry;
         if ((fvx_read(&fp_info, &entry, entry_size, &bt) != FR_OK) ||
@@ -1612,19 +2079,20 @@ u32 BuildNcchInfoXorpads(const char* destdir, const char* path) {
         
         char dest[256]; // 256 is the maximum length of a full path
         snprintf(dest, 256, "%s/%s", destdir, entry.filename);
-        if (fvx_open(&fp_xorpad, dest, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
-            ret = 1;
-        if (!ShowProgress(0, 0, entry.filename)) ret = 1;
-        for (u64 p = 0; (p < entry.size_b) && (ret == 0); p += MAIN_BUFFER_SIZE) {
-            UINT create_bytes = min(MAIN_BUFFER_SIZE, entry.size_b - p);
-            if (BuildNcchInfoXorpad(MAIN_BUFFER, &entry, create_bytes, p) != 0) ret = 1;
-            if (fvx_write(&fp_xorpad, MAIN_BUFFER, create_bytes, &bt) != FR_OK) ret = 1;
-            if (!ShowProgress(p + create_bytes, entry.size_b, entry.filename)) ret = 1;
-        }
-        fvx_close(&fp_xorpad);
+        if (fvx_open(&fp_xorpad, dest, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+            if (!ShowProgress(0, 0, entry.filename)) ret = 1;
+            for (u64 p = 0; (p < entry.size_b) && (ret == 0); p += STD_BUFFER_SIZE) {
+                UINT create_bytes = min(STD_BUFFER_SIZE, entry.size_b - p);
+                if (BuildNcchInfoXorpad(buffer, &entry, create_bytes, p) != 0) ret = 1;
+                if (fvx_write(&fp_xorpad, buffer, create_bytes, &bt) != FR_OK) ret = 1;
+                if (!ShowProgress(p + create_bytes, entry.size_b, entry.filename)) ret = 1;
+            }
+            fvx_close(&fp_xorpad);
+        } else ret = 1;
         if (ret != 0) f_unlink(dest); // get rid of the borked file
     }
     
+    if (buffer) free(buffer);
     fvx_close(&fp_info);
     return ret;
 }
@@ -1655,17 +2123,18 @@ u32 GetHealthAndSafetyPaths(const char* drv, char* path_cxi, char* path_bak) {
     // build paths
     if (path_cxi) *path_cxi = '\0';
     if (path_bak) *path_bak = '\0';
+    TitleMetaData* tmd = (TitleMetaData*) malloc(TMD_SIZE_MAX);
+    TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
     for (u32 i = 0; i < 8; i++) { // 8 is an arbitrary number
-        TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
-        TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
         char path_tmd[64];
         snprintf(path_tmd, 64, "%s/title/00040010/%08lx/content/%08lx.tmd", drv, tidlow_hs, i);
         if (LoadTmdFile(tmd, path_tmd) != 0) continue;
-        if (!getbe16(tmd->content_count)) return 1;
+        if (!getbe16(tmd->content_count)) break;
         if (path_cxi) snprintf(path_cxi, 64, "%s/title/00040010/%08lx/content/%08lx.app", drv, tidlow_hs, getbe32(chunk->id));
         if (path_bak) snprintf(path_bak, 64, "%s/title/00040010/%08lx/content/%08lx.bak", drv, tidlow_hs, getbe32(chunk->id));
         break;
     }
+    free(tmd);
     
     return ((path_cxi && !*path_cxi) || (path_bak && !*path_bak)) ? 1 : 0;
 }
@@ -1678,6 +2147,7 @@ u32 CheckHealthAndSafetyInject(const char* hsdrv) {
 
 u32 InjectHealthAndSafety(const char* path, const char* destdrv) {
     NcchHeader ncch;
+    NcchExtHeader exthdr;
         
     // write permissions
     if (!CheckWritePermissions(destdrv))
@@ -1701,12 +2171,12 @@ u32 InjectHealthAndSafety(const char* path, const char* destdrv) {
     }
     
     // check input file / crypto
-    if ((LoadNcchHeaders(&ncch, NULL, NULL, path, 0) != 0) ||
+    if ((LoadNcchHeaders(&ncch, &exthdr, NULL, path, 0) != 0) ||
         !(NCCH_IS_CXI(&ncch)) || (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0))
         return 1;
     
     // check crypto, get sig
-    if ((LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) != 0) ||
+    if ((LoadNcchHeaders(&ncch, &exthdr, NULL, path_cxi, 0) != 0) ||
         (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0) || !(NCCH_IS_CXI(&ncch)))
         return 1;
     u8 sig[0x100];
@@ -1724,14 +2194,19 @@ u32 InjectHealthAndSafety(const char* path, const char* destdrv) {
     if (CryptNcchNcsdBossFirmFile(path, path_cxi, GAME_NCCH, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0)
         ret = 1;
     
-    // fix up the injected H&S NCCH header (copy H&S signature, title ID) 
-    if ((ret == 0) && (LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) == 0)) {
-        UINT bw;
+    // fix up the injected H&S NCCH header / extheader (copy H&S signature, title ID to multiple locations)
+    // also set savedata size to zero (thanks @TurdPooCharger)
+    if ((ret == 0) && (LoadNcchHeaders(&ncch, &exthdr, NULL, path_cxi, 0) == 0)) {
         ncch.programId = tid_hs;
         ncch.partitionId = tid_hs;
+        exthdr.jump_id = tid_hs;
+        exthdr.aci_title_id = tid_hs;
+        exthdr.aci_limit_title_id = tid_hs;
+        exthdr.savedata_size = 0;
         memcpy(ncch.signature, sig, 0x100);
-        if ((fvx_qwrite(path_cxi, &ncch, 0, sizeof(NcchHeader), &bw) != FR_OK) ||
-            (bw != sizeof(NcchHeader)))
+        sha_quick(ncch.hash_exthdr, &exthdr, 0x400, SHA256_MODE);
+        if ((fvx_qwrite(path_cxi, &ncch, 0, sizeof(NcchHeader), NULL) != FR_OK) ||
+            (fvx_qwrite(path_cxi, &exthdr, NCCH_EXTHDR_OFFSET, sizeof(NcchExtHeader), NULL) != FR_OK))
             ret = 1;
     } else ret = 1;
     
@@ -1751,7 +2226,7 @@ u32 InjectHealthAndSafety(const char* path, const char* destdrv) {
 
 u32 GetARGamesPaths(const char* drv, char* path_cxi, char* path_bak) {
     const u32 tidlow_ar_path[] = { 0x00020E00 , 0x00021E00 , 0x00022E00 , 0 , 0x00026E00 , 0x00027E00 , 0x00028E00 }; //I am unsure of this array.
-    
+
     // get AR Games title id low
     u32 tidlow_ar = 0;
     for (char secchar = 'C'; secchar >= 'A'; secchar--) {
@@ -1769,7 +2244,7 @@ u32 GetARGamesPaths(const char* drv, char* path_cxi, char* path_bak) {
         break;
     }
     if (!tidlow_ar) return 1;
-    
+
     // build paths
     if (path_cxi) *path_cxi = '\0';
     if (path_bak) *path_bak = '\0';
@@ -1784,7 +2259,7 @@ u32 GetARGamesPaths(const char* drv, char* path_cxi, char* path_bak) {
         if (path_bak) snprintf(path_bak, 64, "%s/title/00040010/%08lx/content/%08lx.bak", drv, tidlow_ar, getbe32(chunk->id));
         break;
     }
-    
+
     return ((path_cxi && !*path_cxi) || (path_bak && !*path_bak)) ? 1 : 0;
 }
 
@@ -1794,35 +2269,36 @@ u32 CheckARGamesInject(const char* hsdrv) {
         (f_stat(path_bak, NULL) == FR_OK)) ? 0 : 1;
 }
 
+
 u32 InjectARGames(const char* path, const char* destdrv) {
     NcchHeader ncch;
-        
+
     // write permissions
     if (!CheckWritePermissions(destdrv))
         return 1;
-    
+
     // legacy stuff - remove mark file
     char path_mrk[32] = { 0 };
     snprintf(path_mrk, 32, "%s/%s", destdrv, "__gm9_hsbak.pth");
     f_unlink(path_mrk);
-    
+
     // get AR Games paths
     char path_cxi[64] = { 0 };
     char path_bak[64] = { 0 };
     if (GetARGamesPaths(destdrv, path_cxi, path_bak) != 0) return 1;
-    
+
     if (!path) { // if path == NULL -> restore AR Games from backup
         if (f_stat(path_bak, NULL) != FR_OK) return 1;
         f_unlink(path_cxi);
         f_rename(path_bak, path_cxi);
         return 0;
     }
-    
+
     // check input file / crypto
     if ((LoadNcchHeaders(&ncch, NULL, NULL, path, 0) != 0) ||
         !(NCCH_IS_CXI(&ncch)) || (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0))
         return 1;
-    
+
     // check crypto, get sig
     if ((LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) != 0) ||
         (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0) || !(NCCH_IS_CXI(&ncch)))
@@ -1831,17 +2307,17 @@ u32 InjectARGames(const char* path, const char* destdrv) {
     memcpy(sig, ncch.signature, 0x100);
     u16 crypto = NCCH_GET_CRYPTO(&ncch);
     u64 tid_ar = ncch.programId;
-    
+
     // make a backup copy if there is not already one (point of no return)
     if (f_stat(path_bak, NULL) != FR_OK) {
         if (f_rename(path_cxi, path_bak) != FR_OK) return 1;
     } else f_unlink(path_cxi);
-    
+
     // copy / decrypt the source CXI
     u32 ret = 0;
     if (CryptNcchNcsdBossFirmFile(path, path_cxi, GAME_NCCH, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0)
         ret = 1;
-    
+
     // fix up the injected H&S NCCH header (copy H&S signature, title ID) 
     if ((ret == 0) && (LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) == 0)) {
         UINT bw;
@@ -1852,21 +2328,21 @@ u32 InjectARGames(const char* path, const char* destdrv) {
             (bw != sizeof(NcchHeader)))
             ret = 1;
     } else ret = 1;
-    
+
     // encrypt the CXI in place
     if (CryptNcchNcsdBossFirmFile(path_cxi, path_cxi, GAME_NCCH, crypto, 0, 0, NULL, NULL) != 0)
         ret = 1;
-    
+
     if (ret != 0) { // in case of failure: try recover
         f_unlink(path_cxi);
         f_rename(path_bak, path_cxi);
     }
-    
+
     return ret;
 }//start sys applet (HomeMenu) Inject
 u32 GetHMPaths(const char* drv, char* path_cxi, char* path_bak) {
     const u32 tidlow_hm_path[] = { 0x00008202, 0x00008F02, 0x00009802, 0,  0x0000A102, 0x0000A903, 0x0000B102 }; //this should work
-    
+
     // get HM title id low
     u32 tidlow_hm = 0;
     for (char secchar = 'C'; secchar >= 'A'; secchar--) {
@@ -1884,7 +2360,7 @@ u32 GetHMPaths(const char* drv, char* path_cxi, char* path_bak) {
         break;
     }
     if (!tidlow_hm) return 1;
-    
+
     // build paths
     if (path_cxi) *path_cxi = '\0';
     if (path_bak) *path_bak = '\0';
@@ -1899,10 +2375,10 @@ u32 GetHMPaths(const char* drv, char* path_cxi, char* path_bak) {
         if (path_bak) snprintf(path_bak, 64, "%s/title/00040030/%08lx/content/%08lx.bak", drv, tidlow_hm, getbe32(chunk->id));
         break;
     }
-    
+
     return ((path_cxi && !*path_cxi) || (path_bak && !*path_bak)) ? 1 : 0;
  }
- 
+
 u32 CheckHMInject(const char* hsdrv) {
     char path_bak[64] = { 0 };
     return ((GetHMPaths(hsdrv, NULL, path_bak) == 0) &&
@@ -1911,33 +2387,33 @@ u32 CheckHMInject(const char* hsdrv) {
 
 u32 InjectHM(const char* path, const char* destdrv) {
     NcchHeader ncch;
-        
+
     // write permissions
     if (!CheckWritePermissions(destdrv))
         return 1;
-    
+
     // legacy stuff - remove mark file
     char path_mrk[32] = { 0 };
     snprintf(path_mrk, 32, "%s/%s", destdrv, "__gm9_hsbak.pth");
     f_unlink(path_mrk);
-    
+
     // get HM paths
     char path_cxi[64] = { 0 };
     char path_bak[64] = { 0 };
     if (GetHMPaths(destdrv, path_cxi, path_bak) != 0) return 1;
-    
+
     if (!path) { // if path == NULL -> restore HM from backup
         if (f_stat(path_bak, NULL) != FR_OK) return 1;
         f_unlink(path_cxi);
         f_rename(path_bak, path_cxi);
         return 0;
     }
-    
+
     // check input file / crypto
     if ((LoadNcchHeaders(&ncch, NULL, NULL, path, 0) != 0) ||
         !(NCCH_IS_CXI(&ncch)) || (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0))
         return 1;
-    
+
     // check crypto, get sig
     if ((LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) != 0) ||
         (SetupNcchCrypto(&ncch, NCCH_NOCRYPTO) != 0) || !(NCCH_IS_CXI(&ncch)))
@@ -1946,17 +2422,17 @@ u32 InjectHM(const char* path, const char* destdrv) {
     memcpy(sig, ncch.signature, 0x100);
     u16 crypto = NCCH_GET_CRYPTO(&ncch);
     u64 tid_hm = ncch.programId;
-    
+
     // make a backup copy if there is not already one (point of no return)
     if (f_stat(path_bak, NULL) != FR_OK) {
         if (f_rename(path_cxi, path_bak) != FR_OK) return 1;
     } else f_unlink(path_cxi);
-    
+
     // copy / decrypt the source CXI
     u32 ret = 0;
     if (CryptNcchNcsdBossFirmFile(path, path_cxi, GAME_NCCH, CRYPTO_DECRYPT, 0, 0, NULL, NULL) != 0)
         ret = 1;
-    
+
     // fix up the injected HM NCCH header (copy HM signature, title ID) 
     if ((ret == 0) && (LoadNcchHeaders(&ncch, NULL, NULL, path_cxi, 0) == 0)) {
         UINT bw;
@@ -1967,32 +2443,34 @@ u32 InjectHM(const char* path, const char* destdrv) {
             (bw != sizeof(NcchHeader)))
             ret = 1;
     } else ret = 1;
-    
+
     // encrypt the CXI in place
     if (CryptNcchNcsdBossFirmFile(path_cxi, path_cxi, GAME_NCCH, crypto, 0, 0, NULL, NULL) != 0)
         ret = 1;
-    
+
     if (ret != 0) { // in case of failure: try recover
         f_unlink(path_cxi);
         f_rename(path_bak, path_cxi);
     }
-    
+
     return ret;
 
 }//end sys applet (HomeMenu) inject
 
 u32 BuildTitleKeyInfo(const char* path, bool dec, bool dump) {
-    TitleKeysInfo* tik_info = (TitleKeysInfo*) MAIN_BUFFER;
+    static TitleKeysInfo* tik_info = NULL;
     const char* path_out = (dec) ? OUTPUT_PATH "/" TIKDB_NAME_DEC : OUTPUT_PATH "/" TIKDB_NAME_ENC;
     const char* path_in = path;
-    UINT br;
     
     // write permissions
     if (!CheckWritePermissions(path_out))
         return 1;
     
     if (!path_in && !dump) { // no input path given - initialize
+        if (!tik_info) tik_info = (TitleKeysInfo*) malloc(STD_BUFFER_SIZE);
+        if (!tik_info) return 1;
         memset(tik_info, 0, 16);
+        
         if ((fvx_stat(path_out, NULL) == FR_OK) &&
             (ShowPrompt(true, "%s\nOutput file already exists.\nUpdate this?", path_out)))
             path_in = path_out;
@@ -2001,72 +2479,86 @@ u32 BuildTitleKeyInfo(const char* path, bool dec, bool dump) {
     
     u64 filetype = path_in ? IdentifyFileType(path_in) : 0;
     if (filetype & GAME_TICKET) {
-        Ticket* ticket = (Ticket*) TEMP_BUFFER;
-        if ((fvx_qread(path_in, ticket, 0, TICKET_SIZE, &br) != FR_OK) || (br != TICKET_SIZE) ||
-            (TIKDB_SIZE(tik_info) + 32 > MAIN_BUFFER_SIZE) || (AddTicketToInfo(tik_info, ticket, dec) != 0)) return 1;
-    } else if (filetype & SYS_TICKDB) {
-        const u32 area_offsets[] = { TICKDB_AREA_OFFSETS };
-        FIL file;
-        if (fvx_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return 1;
-        // parse file, sector by sector
-        for (u32 p = 0; p < sizeof(area_offsets) / sizeof(u32); p++) {
-            fvx_lseek(&file, area_offsets[p]);
-            fvx_sync(&file);
-            for (u32 i = 0; i < TICKDB_AREA_SIZE; i += (TEMP_BUFFER_SIZE - 0x200)) {
-                u32 read_bytes = min(TEMP_BUFFER_SIZE, TICKDB_AREA_SIZE - i);
-                u8* data = (u8*) TEMP_BUFFER;
-                if ((fvx_read(&file, data, read_bytes, &br) != FR_OK) || (br != read_bytes)) {
-                    fvx_close(&file);
-                    return 1;
-                }
-                for (; data + TICKET_SIZE < ((u8*) TEMP_BUFFER) + read_bytes; data += 0x200) {
-                    Ticket* ticket = TicketFromTickDbChunk(data, NULL, false);
-                    if (!ticket || (ticket->commonkey_idx >= 2) || !getbe64(ticket->ticket_id)) continue;
-                    if (TIKDB_SIZE(tik_info) + 32 > MAIN_BUFFER_SIZE) return 1;
-                    AddTicketToInfo(tik_info, ticket, dec); // ignore result
-                }
-            }
+        Ticket ticket;
+        if ((fvx_qread(path_in, &ticket, 0, TICKET_SIZE, NULL) != FR_OK) ||
+            (TIKDB_SIZE(tik_info) + 32 > STD_BUFFER_SIZE) ||
+            (AddTicketToInfo(tik_info, &ticket, dec) != 0)) {
+            return 1;
         }
-        fvx_close(&file);
+    } else if (filetype & SYS_TICKDB) {
+        u8* data = (u8*) malloc(TICKDB_AREA_SIZE);
+        if (!data) return 1;
+        
+        // read and decode ticket.db DIFF partition
+        if (ReadDisaDiffIvfcLvl4(path_in, NULL, TICKDB_AREA_OFFSET, TICKDB_AREA_SIZE, data) != TICKDB_AREA_SIZE) {
+            free(data);
+            return 1;
+        }
+        
+        // parse the decoded data for valid tickets
+        for (u32 i = 0; i <= TICKDB_AREA_SIZE - 0x400; i += 0x200) {
+            Ticket* ticket = TicketFromTickDbChunk(data + i, NULL, true);
+            if (!ticket || (ticket->commonkey_idx >= 2) || !getbe64(ticket->ticket_id)) continue;
+            if (TIKDB_SIZE(tik_info) + 32 > STD_BUFFER_SIZE) break; // no error message
+            AddTicketToInfo(tik_info, ticket, dec); // ignore result
+        }
+        
+        free(data);
     } else if (filetype & BIN_TIKDB) {
-        TitleKeysInfo* tik_info_merge = (TitleKeysInfo*) TEMP_BUFFER;
-        if ((fvx_qread(path_in, tik_info_merge, 0, TEMP_BUFFER_SIZE, &br) != FR_OK) ||
-            (TIKDB_SIZE(tik_info_merge) != br)) return 1;
+        TitleKeysInfo* tik_info_merge = (TitleKeysInfo*) malloc(STD_BUFFER_SIZE);
+        if (!tik_info_merge) return 1;
+        
+        UINT br;
+        if ((fvx_qread(path_in, tik_info_merge, 0, STD_BUFFER_SIZE, &br) != FR_OK) ||
+            (TIKDB_SIZE(tik_info_merge) != br)) {
+            free(tik_info_merge);
+            return 1;
+        }
+        
         // merge and rebuild TitleKeyInfo
         u32 n_entries = tik_info_merge->n_entries;
         TitleKeyEntry* tik = tik_info_merge->entries;
         for (u32 i = 0; i < n_entries; i++, tik++) {
-            if (TIKDB_SIZE(tik_info) + 32 > MAIN_BUFFER_SIZE) return 1;
-            AddTitleKeyToInfo(tik_info, tik, !(filetype & FLAG_ENC), dec, false); // ignore result
-                
+            if (TIKDB_SIZE(tik_info) + 32 > STD_BUFFER_SIZE) break; // no error message
+            AddTitleKeyToInfo(tik_info, tik, !(filetype & FLAG_ENC), dec, false); // ignore result 
         }
+        
+        free(tik_info_merge);
     }
     
     if (dump) {
         u32 dump_size = TIKDB_SIZE(tik_info);
-        if (fvx_rmkdir(OUTPUT_PATH) != FR_OK) // ensure the output dir exists
-            return 1;
-        f_unlink(path_out);
-        if ((dump_size <= 16) || (fvx_qwrite(path_out, tik_info, 0, dump_size, &br) != FR_OK) || (br != dump_size))
-            return 1;
+        
+        if (dump_size > 16) {
+            if (fvx_rmkdir(OUTPUT_PATH) != FR_OK) // ensure the output dir exists
+                return 1;
+            f_unlink(path_out);
+            if ((dump_size <= 16) || (fvx_qwrite(path_out, tik_info, 0, dump_size, NULL) != FR_OK))
+                return 1;
+        }
+        
+        free(tik_info);
+        tik_info = NULL;
     }
     
     return 0;
 }
 
 u32 BuildSeedInfo(const char* path, bool dump) {
-    SeedInfo* seed_info = (SeedInfo*) MAIN_BUFFER;
+    static SeedInfo* seed_info = NULL;
     const char* path_out = OUTPUT_PATH "/" SEEDDB_NAME;
     const char* path_in = path;
     u32 inputtype = 0; // 0 -> none, 1 -> seeddb.bin, 2 -> seed system save
-    UINT br;
     
     // write permissions
     if (!CheckWritePermissions(path_out))
         return 1;
     
     if (!path_in && !dump) { // no input path given - initialize
+        if (!seed_info) seed_info = (SeedInfo*) malloc(STD_BUFFER_SIZE);
+        if (!seed_info) return 1;
         memset(seed_info, 0, 16);
+        
         if ((fvx_stat(path_out, NULL) == FR_OK) &&
             (ShowPrompt(true, "%s\nOutput file already exists.\nUpdate this?", path_out))) {
             path_in = path_out;
@@ -2074,12 +2566,15 @@ u32 BuildSeedInfo(const char* path, bool dump) {
         } else return 0;
     }
     
+    // seed info has to be allocated at this point
+    if (!seed_info) return 1;
+    
     char path_str[128];
     if (path_in && (strnlen(path_in, 16) == 2)) { // when only a drive is given...
         // grab the key Y from movable.sed
         u8 movable_keyy[16];
         snprintf(path_str, 128, "%s/private/movable.sed", path_in);
-        if ((fvx_qread(path_str, movable_keyy, 0x110, 0x10, &br) != FR_OK) || (br != 0x10))
+        if (fvx_qread(path_str, movable_keyy, 0x110, 0x10, NULL) != FR_OK)
             return 1;
         // build the seed save path
         u32 sha256sum[8];
@@ -2091,45 +2586,62 @@ u32 BuildSeedInfo(const char* path, bool dump) {
     }
     
     if (inputtype == 1) { // seeddb.bin input
-        SeedInfo* seed_info_merge = (SeedInfo*) TEMP_BUFFER;
-        if ((fvx_qread(path_in, seed_info_merge, 0, TEMP_BUFFER_SIZE, &br) != FR_OK) ||
-            (SEEDDB_SIZE(seed_info_merge) != br)) return 1;
+        SeedInfo* seed_info_merge = (SeedInfo*) malloc(STD_BUFFER_SIZE);
+        if (!seed_info_merge) return 1;
+        
+        UINT br;
+        if ((fvx_qread(path_in, seed_info_merge, 0, STD_BUFFER_SIZE, &br) != FR_OK) ||
+            (SEEDDB_SIZE(seed_info_merge) != br)) {
+            free(seed_info_merge);
+            return 1;
+        }
+        
         // merge and rebuild SeedInfo
         u32 n_entries = seed_info_merge->n_entries;
         SeedInfoEntry* seed = seed_info_merge->entries;
         for (u32 i = 0; i < n_entries; i++, seed++) {
-            if (SEEDDB_SIZE(seed_info) + 32 > MAIN_BUFFER_SIZE) return 1;
+            if (SEEDDB_SIZE(seed_info) + 32 > STD_BUFFER_SIZE) break; // no error message
             AddSeedToDb(seed_info, seed); // ignore result        
         }
+        
+        free(seed_info_merge);
     } else if (inputtype == 2) { // seed system save input
-        static const u32 seed_offset[2] = {SEEDSAVE_AREA_OFFSETS};
-        u8* seedsave = (u8*) TEMP_BUFFER;
-        if ((fvx_qread(path_in, seedsave, 0, 0x200, &br) != FR_OK) || (br != 0x200))
+        u8* seedsave = (u8*) malloc(SEEDSAVE_AREA_SIZE);
+        if (!seedsave) return 1;
+        
+        if (ReadDisaDiffIvfcLvl4(path_in, NULL, SEEDSAVE_AREA_OFFSET, SEEDSAVE_AREA_SIZE, seedsave) != SEEDSAVE_AREA_SIZE) {
+            free(seedsave);
             return 1;
-        u32 p_active = (getle32(seedsave + 0x168)) ? 1 : 0;
-        for (u32 p = 0; p < 2; p++) {
-            SeedInfoEntry seed = { 0 };
-            if ((fvx_qread(path_in, seedsave, seed_offset[(p + p_active) % 2], SEEDSAVE_MAX_ENTRIES*(8+16), &br) != FR_OK) ||
-                (br != SEEDSAVE_MAX_ENTRIES*(8+16)))
-                return 1;
-            for (u32 s = 0; s < SEEDSAVE_MAX_ENTRIES; s++) {
-                seed.titleId = getle64(seedsave + (s*8));
-                memcpy(seed.seed, seedsave + (SEEDSAVE_MAX_ENTRIES*8) + (s*16), 16);
-                if (((seed.titleId >> 32) != 0x00040000) ||
-                    (!getle64(seed.seed) && !getle64(seed.seed + 8))) continue;
-                if (SEEDDB_SIZE(seed_info) + 32 > MAIN_BUFFER_SIZE) return 1;
-                AddSeedToDb(seed_info, &seed); // ignore result 
-            }
         }
+        
+        SeedInfoEntry seed = { 0 };
+        for (u32 s = 0; s < SEEDSAVE_MAX_ENTRIES; s++) {
+            seed.titleId = getle64(seedsave + (s*8));
+            memcpy(seed.seed, seedsave + (SEEDSAVE_MAX_ENTRIES*8) + (s*16), 16);
+            if (((seed.titleId >> 32) != 0x00040000) ||
+                (!getle64(seed.seed) && !getle64(seed.seed + 8))) continue;
+            if (SEEDDB_SIZE(seed_info) + 32 > STD_BUFFER_SIZE) break; // no error message
+            AddSeedToDb(seed_info, &seed); // ignore result 
+        }
+        
+        free(seedsave);
     }
     
     if (dump) {
         u32 dump_size = SEEDDB_SIZE(seed_info);
-        if (fvx_rmkdir(OUTPUT_PATH) != FR_OK) // ensure the output dir exists
-            return 1;
-        f_unlink(path_out);
-        if ((dump_size <= 16) || (fvx_qwrite(path_out, seed_info, 0, dump_size, &br) != FR_OK) || (br != dump_size))
-            return 1;
+        u32 ret = 0;
+        
+        if (dump_size > 16) {
+            if (fvx_rmkdir(OUTPUT_PATH) != FR_OK) // ensure the output dir exists
+                ret = 1;
+            f_unlink(path_out);
+            if (fvx_qwrite(path_out, seed_info, 0, dump_size, NULL) != FR_OK)
+                ret = 1;
+        } else ret = 1;
+        
+        free(seed_info);
+        seed_info = NULL;
+        return ret;
     }
     
     return 0;
@@ -2137,39 +2649,48 @@ u32 BuildSeedInfo(const char* path, bool dump) {
 
 u32 LoadNcchFromGameFile(const char* path, NcchHeader* ncch) {
     u64 filetype = IdentifyFileType(path);
-    UINT br;
     
     if (filetype & GAME_NCCH) {
-        if ((fvx_qread(path, ncch, 0, sizeof(NcchHeader), &br) == FR_OK) &&
-            (br == sizeof(NcchHeader)) && (ValidateNcchHeader(ncch) == 0)) return 0;
+        if ((fvx_qread(path, ncch, 0, sizeof(NcchHeader), NULL) == FR_OK) &&
+            (ValidateNcchHeader(ncch) == 0)) return 0;
     } else if (filetype & GAME_NCSD) {
-        if ((fvx_qread(path, ncch, NCSD_CNT0_OFFSET, sizeof(NcchHeader), &br) == FR_OK) &&
-            (br == sizeof(NcchHeader)) && (ValidateNcchHeader(ncch) == 0)) return 0;
+        if ((fvx_qread(path, ncch, NCSD_CNT0_OFFSET, sizeof(NcchHeader), NULL) == FR_OK) &&
+            (ValidateNcchHeader(ncch) == 0)) return 0;
     } else if (filetype & GAME_CIA) {
-        CiaStub* cia = (CiaStub*) TEMP_BUFFER;
+        CiaStub* cia = (CiaStub*) malloc(sizeof(CiaStub));
         CiaInfo info;
         
         // load CIA stub from path
         if ((LoadCiaStub(cia, path) != 0) ||
             (GetCiaInfo(&info, &(cia->header)) != 0)) {
+            free(cia);
             return 1;
         }
         
         // decrypt / load NCCH header from first CIA content
+        u32 ret = 1;
         if (getbe16(cia->tmd.content_count)) {
             TmdContentChunk* chunk = cia->content_list;
             if ((getbe64(chunk->size) < sizeof(NcchHeader)) ||
-                (fvx_qread(path, ncch, info.offset_content, sizeof(NcchHeader), &br) != FR_OK) ||
-                (br != sizeof(NcchHeader))) return 1;
+                (fvx_qread(path, ncch, info.offset_content, sizeof(NcchHeader), NULL) != FR_OK)) {
+                    free(cia);
+                    return 1;
+                }
             if (getbe16(chunk->type) & 0x1) { // decrypt first content header
                 u8 titlekey[16];
                 u8 ctr[16];
                 GetTmdCtr(ctr, chunk);
-                if (GetTitleKey(titlekey, &(cia->ticket)) != 0) return 1;
+                if (GetTitleKey(titlekey, &(cia->ticket)) != 0) {
+                    free(cia);
+                    return 1;
+                }
                 DecryptCiaContentSequential((void*) ncch, sizeof(NcchHeader), ctr, titlekey);
             }
-            if (ValidateNcchHeader(ncch) == 0) return 0;
+            if (ValidateNcchHeader(ncch) == 0) ret = 0;
         }
+        
+        free(cia);
+        return ret;
     }
     
     return 1;
@@ -2212,68 +2733,68 @@ u32 GetGoodName(char* name, const char* path, bool quick) {
     }
     
     if (type_donor & GAME_GBA) { // AGB
-        AgbHeader* agb = (AgbHeader*) TEMP_BUFFER;
-        if (fvx_qread(path_donor, agb, 0, sizeof(AgbHeader), NULL) != FR_OK) return 1;
-        snprintf(name, 128, "%.12s (AGB-%.4s).%s", agb->game_title, agb->game_code, ext);
+        AgbHeader agb;
+        if (fvx_qread(path_donor, &agb, 0, sizeof(AgbHeader), NULL) != FR_OK) return 1;
+        snprintf(name, 128, "%.12s (AGB-%.4s).%s", agb.game_title, agb.game_code, ext);
     } else if (type_donor & GAME_NDS) { // NTR or TWL
-        TwlHeader* twl = (TwlHeader*) TEMP_BUFFER;
-        TwlIconData* icon = (TwlIconData*) (TEMP_BUFFER + sizeof(TwlHeader));
-        if (LoadTwlMetaData(path_donor, twl, quick ? NULL : icon) != 0) return 1;
+        TwlHeader twl;
+        TwlIconData icon;
+        if (LoadTwlMetaData(path_donor, &twl, quick ? NULL : &icon) != 0) return 1;
         if (quick) {
-            if (twl->unit_code & 0x02) { // TWL
-                snprintf(name, 128, "%016llX (TWL-%.4s).%s", twl->title_id, twl->game_code, ext);
+            if (twl.unit_code & 0x02) { // TWL
+                snprintf(name, 128, "%016llX (TWL-%.4s).%s", twl.title_id, twl.game_code, ext);
             } else { // NTR
-                snprintf(name, 128, "%.12s (NTR-%.4s).%s", twl->game_title, twl->game_code, ext);
+                snprintf(name, 128, "%.12s (NTR-%.4s).%s", twl.game_title, twl.game_code, ext);
             }
         } else {
             char title_name[0x80+1] = { 0 };
-            if (GetTwlTitle(title_name, icon) != 0) return 1;
+            if (GetTwlTitle(title_name, &icon) != 0) return 1;
             char* linebrk = strchr(title_name, '\n');
             if (linebrk) *linebrk = '\0';
             
-            if (twl->unit_code & 0x02) { // TWL
+            if (twl.unit_code & 0x02) { // TWL
                 char region[8] = { 0 };
-                if (twl->region_flags == TWL_REGION_FREE) snprintf(region, 8, "W");
+                if (twl.region_flags == TWL_REGION_FREE) snprintf(region, 8, "W");
                 snprintf(region, 8, "%s%s%s%s%s",
-                    (twl->region_flags & REGION_MASK_JPN) ? "J" : "",
-                    (twl->region_flags & REGION_MASK_USA) ? "U" : "",
-                    (twl->region_flags & REGION_MASK_EUR) ? "E" : "",
-                    (twl->region_flags & REGION_MASK_CHN) ? "C" : "",
-                    (twl->region_flags & REGION_MASK_KOR) ? "K" : "");
+                    (twl.region_flags & REGION_MASK_JPN) ? "J" : "",
+                    (twl.region_flags & REGION_MASK_USA) ? "U" : "",
+                    (twl.region_flags & REGION_MASK_EUR) ? "E" : "",
+                    (twl.region_flags & REGION_MASK_CHN) ? "C" : "",
+                    (twl.region_flags & REGION_MASK_KOR) ? "K" : "");
                 if (strncmp(region, "JUECK", 8) == 0) snprintf(region, 8, "W");
                 if (!*region) snprintf(region, 8, "UNK");
                 
-                char* unit_str = (twl->unit_code == TWL_UNITCODE_TWLNTR) ? "DSi Enhanced" : "DSi Exclusive";
+                char* unit_str = (twl.unit_code == TWL_UNITCODE_TWLNTR) ? "DSi Enhanced" : "DSi Exclusive";
                 snprintf(name, 128, "%016llX %s (TWL-%.4s) (%s) (%s).%s",
-                    twl->title_id, title_name, twl->game_code, unit_str, region, ext);
+                    twl.title_id, title_name, twl.game_code, unit_str, region, ext);
             } else { // NTR
-                snprintf(name, 128, "%s (NTR-%.4s).%s", title_name, twl->game_code, ext);
+                snprintf(name, 128, "%s (NTR-%.4s).%s", title_name, twl.game_code, ext);
             }
         }
     } else if (type_donor & (GAME_CIA|GAME_NCSD|GAME_NCCH)) { // CTR (data from NCCH)
-        NcchHeader* ncch = (NcchHeader*) (void*) TEMP_BUFFER;
-        Smdh* smdh = (Smdh*) (TEMP_BUFFER + sizeof(NcchHeader));
-        if (LoadNcchFromGameFile(path_donor, ncch) != 0) return 1;
-        if (quick || (LoadSmdhFromGameFile(path_donor, smdh) != 0)) {
-            snprintf(name, 128, "%016llX%s (%.16s).%s", ncch->programId, appid_str, ncch->productcode, ext);
+        NcchHeader ncch;
+        Smdh smdh; // pretty big for the stack, but should be okay here
+        if (LoadNcchFromGameFile(path_donor, &ncch) != 0) return 1;
+        if (quick || (LoadSmdhFromGameFile(path_donor, &smdh) != 0)) {
+            snprintf(name, 128, "%016llX%s (%.16s).%s", ncch.programId, appid_str, ncch.productcode, ext);
         } else {
             char title_name[0x40+1] = { 0 };
-            if (GetSmdhDescShort(title_name, smdh) != 0) return 1;
+            if (GetSmdhDescShort(title_name, &smdh) != 0) return 1;
             
             char region[8] = { 0 };
-            if (smdh->region_lockout == SMDH_REGION_FREE) snprintf(region, 8, "W");
-            snprintf(region, 8, "%s%s%s%s%s%s",
-                (smdh->region_lockout & REGION_MASK_JPN) ? "J" : "",
-                (smdh->region_lockout & REGION_MASK_USA) ? "U" : "",
-                (smdh->region_lockout & REGION_MASK_EUR) ? "E" : "",
-                (smdh->region_lockout & REGION_MASK_CHN) ? "C" : "",
-                (smdh->region_lockout & REGION_MASK_KOR) ? "K" : "",
-                (smdh->region_lockout & REGION_MASK_TWN) ? "T" : "");
+            if (smdh.region_lockout == SMDH_REGION_FREE) snprintf(region, 8, "W");
+            else snprintf(region, 8, "%s%s%s%s%s%s",
+                (smdh.region_lockout & REGION_MASK_JPN) ? "J" : "",
+                (smdh.region_lockout & REGION_MASK_USA) ? "U" : "",
+                (smdh.region_lockout & REGION_MASK_EUR) ? "E" : "",
+                (smdh.region_lockout & REGION_MASK_CHN) ? "C" : "",
+                (smdh.region_lockout & REGION_MASK_KOR) ? "K" : "",
+                (smdh.region_lockout & REGION_MASK_TWN) ? "T" : "");
             if (strncmp(region, "JUECKT", 8) == 0) snprintf(region, 8, "W");
             if (!*region) snprintf(region, 8, "UNK");
             
             snprintf(name, 128, "%016llX%s %s (%.16s) (%s).%s",
-                ncch->programId, appid_str, title_name, ncch->productcode, region, ext);
+                ncch.programId, appid_str, title_name, ncch.productcode, region, ext);
         }
     } else return 1;
     

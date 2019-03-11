@@ -5,6 +5,7 @@
 #include <arm.h>
 #include <brf.h>
 #include <entrypoints.h>
+#include "memmap.h"
 
 .global _start
 _start:
@@ -68,9 +69,19 @@ _start:
     mcr p15, 0, r0, c9, c1, 0  @ set the DTCM Region Register
 
     @ Fix SDMC mounting
-    mov r0, #0x10000000
-    mov r1, #0x340
-    str r1, [r0, #0x20]
+    @ (this is done in sdmmc.c instead)
+    @ mov r0, #0x10000000
+    @ mov r1, #0x340
+    @ strh r1, [r0, #0x20]
+    
+    @ Setup heap
+    ldr r0, =fake_heap_start
+    ldr r1, =__HEAP_ADDR
+    str r1, [r0]
+
+    ldr r0, =fake_heap_end
+    ldr r1, =__HEAP_END
+    str r1, [r0]
 
     @ Install exception handlers
     ldr r0, =XRQ_Start
@@ -93,7 +104,7 @@ _start:
 
     @ Switch to system mode, disable interrupts, setup application stack
     msr cpsr_c, #(SR_SYS_MODE | SR_IRQ | SR_FIQ)
-    ldr sp, =__stack_top
+    ldr sp, =__STACK_TOP
 
     @ Check entrypoints
 

@@ -8,21 +8,17 @@
 #include "spiflash.h"
 #include "i2c.h"
 
-#define VFLAG_CALLBACK      (1UL<<27)
-#define VFLAG_BOOT9         (1UL<<28)
-#define VFLAG_BOOT11        (1UL<<29)
-#define VFLAG_OTP           (1UL<<30)
+#define VFLAG_CALLBACK      (1UL<<26)
+#define VFLAG_BOOT9         (1UL<<27)
+#define VFLAG_BOOT11        (1UL<<28)
+#define VFLAG_OTP           (1UL<<29)
+#define VFLAG_OTP_KEY       (1UL<<30)
 #define VFLAG_N3DS_EXT      (1UL<<31)
 
-// offsets provided by SciresM
-#define BOOT9_POS   0x08080000
-#define BOOT11_POS  0x08090000
-#define BOOT9_LEN   0x00010000
-#define BOOT11_LEN  0x00010000
-
 // checks for boot9 / boot11
-#define HAS_BOOT9   (sha_cmp(boot9_sha256, (u8*) BOOT9_POS, BOOT9_LEN, SHA256_MODE) == 0)
-#define HAS_BOOT11  (sha_cmp(boot11_sha256, (u8*) BOOT11_POS, BOOT11_LEN, SHA256_MODE) == 0)
+#define HAS_BOOT9   (sha_cmp(boot9_sha256, (u8*) __BOOT9_ADDR, __BOOT9_LEN, SHA256_MODE) == 0)
+#define HAS_BOOT11  (sha_cmp(boot11_sha256, (u8*) __BOOT11_ADDR, __BOOT11_LEN, SHA256_MODE) == 0)
+#define HAS_OTP_KEY (HAS_BOOT9 || ((LoadKeyFromFile(NULL, 0x11, 'N', "OTP") == 0) && (LoadKeyFromFile(NULL , 0x11, 'I', "OTP") == 0)))
 
 // see: https://www.youtube.com/watch?v=wogNzUypLuI
 u8 boot9_sha256[0x20] = {
@@ -35,10 +31,8 @@ u8 boot11_sha256[0x20] = {
 };
 
 // see: https://github.com/SciresM/CTRAesEngine/blob/8312adc74b911a6b9cb9e03982ba3768b8e2e69c/CTRAesEngine/AesEngine.cs#L672-L688
-#define OTP_KEY ((u8*) BOOT9_POS + ((IS_DEVKIT) ?  + 0xD700 : 0xD6E0))
+#define OTP_KEY ((u8*) __BOOT9_ADDR + ((IS_DEVKIT) ?  + 0xD700 : 0xD6E0))
 #define OTP_IV  (OTP_KEY + 0x10)
-#define OTP_POS 0x10012000
-#define OTP_LEN sizeof(Otp)
 
 // Custom read/write handlers.
 typedef int ReadVMemFileCallback(const VirtualFile* vfile, void* buffer, u64 offset, u64 count);
@@ -66,24 +60,24 @@ STATIC_ASSERT(sizeof(vMemCallbacks) / sizeof(vMemCallbacks[0]) == VMEM_NUM_CALLB
 
 // see: http://3dbrew.org/wiki/Memory_layout#ARM9
 static const VirtualFile vMemFileTemplates[] = {
-    { "itcm.mem"         , 0x01FF8000, 0x00008000, 0xFF, 0 },
-    { "arm9.mem"         , 0x08000000, 0x00100000, 0xFF, 0 },
-    { "arm9ext.mem"      , 0x08100000, 0x00080000, 0xFF, VFLAG_N3DS_EXT },
-    { "boot9.bin"        , BOOT9_POS , BOOT9_LEN , 0xFF, VFLAG_READONLY | VFLAG_BOOT9 },
-    { "boot11.bin"       , BOOT11_POS, BOOT11_LEN, 0xFF, VFLAG_READONLY | VFLAG_BOOT11 },
-    { "vram.mem"         , 0x18000000, 0x00600000, 0xFF, 0 },
-    { "dsp.mem"          , 0x1FF00000, 0x00080000, 0xFF, 0 },
-    { "axiwram.mem"      , 0x1FF80000, 0x00080000, 0xFF, 0 },
-    { "fcram.mem"        , 0x20000000, 0x08000000, 0xFF, 0 },
-    { "fcramext.mem"     , 0x28000000, 0x08000000, 0xFF, VFLAG_N3DS_EXT },
-    { "dtcm.mem"         , 0x30008000, 0x00004000, 0xFF, 0 },
-    { "otp.mem"          , OTP_POS   , OTP_LEN   , 0xFF, VFLAG_READONLY | VFLAG_OTP },
+    { "itcm.mem"         , __ITCM_ADDR  , __ITCM_LEN  , 0xFF, 0 },
+    { "arm9.mem"         , __A9RAM0_ADDR, __A9RAM0_LEN, 0xFF, 0 },
+    { "arm9ext.mem"      , __A9RAM1_ADDR, __A9RAM1_LEN, 0xFF, VFLAG_N3DS_EXT },
+    { "boot9.bin"        , __BOOT9_ADDR , __BOOT9_LEN , 0xFF, VFLAG_READONLY | VFLAG_BOOT9 },
+    { "boot11.bin"       , __BOOT11_ADDR, __BOOT11_LEN, 0xFF, VFLAG_READONLY | VFLAG_BOOT11 },
+    { "vram.mem"         , __VRAM_ADDR  , __VRAM_LEN  , 0xFF, 0 },
+    { "dsp.mem"          , __DSP_ADDR   , __DSP_LEN   , 0xFF, 0 },
+    { "axiwram.mem"      , __AWRAM_ADDR , __AWRAM_LEN , 0xFF, 0 },
+    { "fcram.mem"        , __FCRAM0_ADDR, __FCRAM0_LEN, 0xFF, 0 },
+    { "fcramext.mem"     , __FCRAM1_ADDR, __FCRAM1_LEN, 0xFF, VFLAG_N3DS_EXT },
+    { "dtcm.mem"         , __DTCM_ADDR  , __DTCM_LEN  , 0xFF, 0 },
+    { "otp.mem"          , __OTP_ADDR   , __OTP_LEN   , 0xFF, VFLAG_READONLY | VFLAG_OTP },
     // { "bootrom.mem"      , 0xFFFF0000, 0x00010000, 0xFF, 0 },
     // { "bootrom_unp.mem"  , 0xFFFF0000, 0x00008000, 0xFF, 0 }
 
     // Custom callback implementations.
     // Keyslot field has arbitrary meaning, and may not actually be a keyslot.
-    { "otp_dec.mem"      , VMEM_CALLBACK_OTP_DECRYPTED, OTP_LEN   , 0x11, VFLAG_CALLBACK | VFLAG_READONLY | VFLAG_OTP },
+    { "otp_dec.mem"      , VMEM_CALLBACK_OTP_DECRYPTED, __OTP_LEN , 0x11, VFLAG_CALLBACK | VFLAG_READONLY | VFLAG_OTP | VFLAG_OTP_KEY },
     { "mcu_3ds_regs.mem" , VMEM_CALLBACK_MCU_REGISTERS, 0x00000100, I2C_DEV_MCU, VFLAG_CALLBACK | VFLAG_READONLY },
     { "mcu_dsi_regs.mem" , VMEM_CALLBACK_MCU_REGISTERS, 0x00000100, I2C_DEV_POWER, VFLAG_CALLBACK | VFLAG_READONLY },
     { "sd_cid.mem"       , VMEM_CALLBACK_FLASH_CID    , 0x00000010, 0x00, VFLAG_CALLBACK | VFLAG_READONLY },
@@ -101,9 +95,10 @@ bool ReadVMemDir(VirtualFile* vfile, VirtualDir* vdir) { // uses a generic vdir 
         
         // process special flags
         if (((vfile->flags & VFLAG_N3DS_EXT) && (IS_O3DS || IS_SIGHAX)) || // this is not on O3DS consoles and locked by sighax
-            ((vfile->flags & VFLAG_OTP) && !(IS_UNLOCKED)) || // OTP still locked
-            ((vfile->flags & VFLAG_BOOT9) && !(HAS_BOOT9)) || // boot9 not found
-            ((vfile->flags & VFLAG_BOOT11) && !(HAS_BOOT11))) // boot11 not found
+            ((vfile->flags & VFLAG_OTP) && !(IS_UNLOCKED))   || // OTP still locked
+            ((vfile->flags & VFLAG_BOOT9) && !(HAS_BOOT9))   || // boot9 not found
+            ((vfile->flags & VFLAG_BOOT11) && !(HAS_BOOT11)) || // boot11 not found
+            ((vfile->flags & VFLAG_OTP_KEY) && !(HAS_OTP_KEY))) // OTP key not found
             continue; 
         
         // found if arriving here
@@ -117,10 +112,10 @@ bool ReadVMemDir(VirtualFile* vfile, VirtualDir* vdir) { // uses a generic vdir 
 int ReadVMemOTPDecrypted(const VirtualFile* vfile, void* buffer, u64 offset, u64 count) {
     (void) vfile;
 
-    alignas(32) u8 otp_local[OTP_LEN];
+    alignas(32) u8 otp_local[__OTP_LEN];
     alignas(32) u8 otp_iv[0x10];
     alignas(32) u8 otp_key[0x10];
-    u8* otp_mem = (u8*) OTP_POS;
+    u8* otp_mem = (u8*) __OTP_ADDR;
     
     if (HAS_BOOT9) { // easy setup when boot9 available
         memcpy(otp_iv, OTP_IV, 0x10);
@@ -133,7 +128,7 @@ int ReadVMemOTPDecrypted(const VirtualFile* vfile, void* buffer, u64 offset, u64
     
     setup_aeskey(0x11, otp_key);
     use_aeskey(0x11);
-    cbc_decrypt(otp_mem, otp_local, OTP_LEN / 0x10, AES_CNT_TITLEKEY_DECRYPT_MODE, otp_iv);
+    cbc_decrypt(otp_mem, otp_local, __OTP_LEN / 0x10, AES_CNT_TITLEKEY_DECRYPT_MODE, otp_iv);
     memcpy(buffer, otp_local + offset, count);
     return 0;
 }

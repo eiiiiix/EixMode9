@@ -1,4 +1,4 @@
-// Copyright 2013 Normmatt
+// Copyright 2013 Normmatt / 2018 d0k3
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 #include "qrcodegen.h"
-#include "font.h"
+#include "vram0.h"
 #include "ui.h"
 #include "rtc.h"
 #include "timer.h"
@@ -16,6 +16,120 @@
 #include "hid.h"
 
 #define STRBUF_SIZE 512 // maximum size of the string buffer
+#define FONT_MAX_WIDTH 8
+#define FONT_MAX_HEIGHT 10
+#define PROGRESS_REFRESH_RATE 30 // the progress bar is only allowed to draw to screen every X milliseconds 
+
+static u32 font_width = 0;
+static u32 font_height = 0;
+static u32 line_height = 0;
+static u8 font_bin[FONT_MAX_HEIGHT * 256];
+
+
+u8* GetFontFromPbm(const void* pbm, const u32 pbm_size, u32* w, u32* h) {
+    char* hdr = (char*) pbm;
+    u32 hdr_max_size = min(512, pbm_size);
+    u32 pbm_w = 0;
+    u32 pbm_h = 0;
+    
+    // minimum size
+    if (hdr_max_size < 7) return NULL;
+    
+    // check header magic, then skip over
+    if (strncmp(hdr, "P4\n", 3) != 0) return NULL;
+    
+    // skip any comments
+    u32 p = 3;
+    while (hdr[p] == '#') {
+        while (hdr[p++] != '\n') {
+            if (p >= hdr_max_size) return NULL;
+        }
+    }
+    
+    // parse width
+    while ((hdr[p] >= '0') && (hdr[p] <= '9')) {
+        if (p >= hdr_max_size) return NULL;
+        pbm_w *= 10;
+        pbm_w += hdr[p++] - '0';
+    }
+    
+    // whitespace
+    if ((hdr[p++] != ' ') || (p >= hdr_max_size))
+        return NULL;
+    
+    // parse height
+    while ((hdr[p] >= '0') && (hdr[p] <= '9')) {
+        if (p >= hdr_max_size) return NULL;
+        pbm_h *= 10;
+        pbm_h += hdr[p++] - '0';
+    }
+    
+    // line break
+    if ((hdr[p++] != '\n') || (p >= hdr_max_size))
+        return NULL;
+    
+    // check sizes
+    if (pbm_w <= 8) { // 1x256 format
+        if ((pbm_w > FONT_MAX_WIDTH) || (pbm_h % 256) ||
+            ((pbm_h / 256) > FONT_MAX_HEIGHT) ||
+            (pbm_h != (pbm_size - p)))
+            return NULL;
+    } else { // 16x16 format
+        if ((pbm_w % 16) || (pbm_h % 16) ||
+            ((pbm_w / 16) > FONT_MAX_WIDTH) ||
+            ((pbm_h / 16) > FONT_MAX_HEIGHT) ||
+            ((pbm_h * pbm_w / 8) != (pbm_size - p)))
+            return NULL;
+    }
+    
+    // all good
+    if (w) *w = pbm_w;
+    if (h) *h = pbm_h;
+    return (u8*) pbm + p;
+}
+
+// sets the font from a given PBM
+// if no PBM is given, the PBM is fetched from the default VRAM0 location
+bool SetFontFromPbm(const void* pbm, u32 pbm_size) {
+    u32 w, h;
+    u8* ptr = NULL;
+    
+    if (!pbm) {
+        u64 pbm_size64 = 0;
+        pbm = FindVTarFileInfo(VRAM0_FONT_PBM, &pbm_size64);
+        pbm_size = (u32) pbm_size64;
+    }
+    
+    if (pbm)
+        ptr = GetFontFromPbm(pbm, pbm_size, &w, &h);
+    
+    if (!ptr) {
+        return false;
+    } else if (w > 8) {
+        font_width = w / 16;
+        font_height = h / 16;
+        memset(font_bin, 0x00, w * h / 8);
+        
+        for (u32 cy = 0; cy < 16; cy++) {
+            for (u32 row = 0; row < font_height; row++) {
+                for (u32 cx = 0; cx < 16; cx++) {
+                    u32 bp0 = (cx * font_width) >> 3;
+                    u32 bm0 = (cx * font_width) % 8;
+                    u8 byte = ((ptr[bp0] << bm0) | (ptr[bp0+1] >> (8 - bm0))) & (0xFF << (8 - font_width));
+                    font_bin[(((cy << 4) + cx) * font_height) + row] = byte;
+                }
+                ptr += font_width << 1;
+            }
+        }
+    } else {
+        font_width = w;
+        font_height = h / 256;
+        memcpy(font_bin, ptr, h);
+    }
+    
+    line_height = min(10, font_height + 2);
+    return true;
+}
 
 void ClearScreen(u8* screen, int color)
 {
@@ -55,6 +169,10 @@ void DrawBitmap(u8* screen, int x, int y, int w, int h, u8* bitmap)
     // on negative values: center the bitmap
     if (x < 0) x = (SCREEN_WIDTH(screen) - w) >> 1;
     if (y < 0) y = (SCREEN_HEIGHT - h) >> 1;
+    
+    // bug out on too big bitmaps / too large dimensions
+    if ((x < 0) || (y < 0) || (w > SCREEN_WIDTH(screen)) || (h > SCREEN_HEIGHT))
+        return;
     
     u8* bitmapPos = bitmap;
     for (int yy = 0; yy < h; yy++) {
@@ -104,13 +222,13 @@ void DrawQrCode(u8* screen, u8* qrcode)
 
 void DrawCharacter(u8* screen, int character, int x, int y, int color, int bgcolor)
 {
-    for (int yy = 0; yy < FONT_HEIGHT; yy++) {
+    for (int yy = 0; yy < (int) font_height; yy++) {
         int xDisplacement = (x * BYTES_PER_PIXEL * SCREEN_HEIGHT);
         int yDisplacement = ((SCREEN_HEIGHT - (y + yy) - 1) * BYTES_PER_PIXEL);
         u8* screenPos = screen + xDisplacement + yDisplacement;
 
-        u8 charPos = font[character * FONT_HEIGHT + yy];
-        for (int xx = 7; xx >= (8 - FONT_WIDTH); xx--) {
+        u8 charPos = font_bin[character * font_height + yy];
+        for (int xx = 7; xx >= (8 - (int) font_width); xx--) {
             if ((charPos >> xx) & 1) {
                 *(screenPos + 0) = color >> 16;  // B
                 *(screenPos + 1) = color >> 8;   // G
@@ -125,12 +243,14 @@ void DrawCharacter(u8* screen, int character, int x, int y, int color, int bgcol
     }
 }
 
-void DrawString(u8* screen, const char *str, int x, int y, int color, int bgcolor)
+void DrawString(u8* screen, const char *str, int x, int y, int color, int bgcolor, bool fix_utf8)
 {
-    size_t max_len = (((screen == TOP_SCREEN) ? SCREEN_WIDTH_TOP : SCREEN_WIDTH_BOT) - x) / FONT_WIDTH;
+    size_t max_len = (((screen == TOP_SCREEN) ? SCREEN_WIDTH_TOP : SCREEN_WIDTH_BOT) - x) / font_width;
     size_t len = (strlen(str) > max_len) ? max_len : strlen(str);
-    for (size_t i = 0; i < len; i++)
-        DrawCharacter(screen, str[i], x + i * FONT_WIDTH, y, color, bgcolor);
+    for (size_t i = 0; i < len; i++) {
+        char c = (char) (fix_utf8 && str[i] >= 0x80) ? '?' : str[i]; 
+        DrawCharacter(screen, c, x + i * font_width, y, color, bgcolor);
+    }
 }
 
 void DrawStringF(u8* screen, int x, int y, int color, int bgcolor, const char *format, ...)
@@ -141,14 +261,30 @@ void DrawStringF(u8* screen, int x, int y, int color, int bgcolor, const char *f
     vsnprintf(str, STRBUF_SIZE, format, va);
     va_end(va);
 
-    for (char* text = strtok(str, "\n"); text != NULL; text = strtok(NULL, "\n"), y += 10)
-        DrawString(screen, text, x, y, color, bgcolor);
+    for (char* text = strtok(str, "\n"); text != NULL; text = strtok(NULL, "\n"), y += line_height)
+        DrawString(screen, text, x, y, color, bgcolor, true);
+}
+
+void DrawStringCenter(u8* screen, int color, int bgcolor, const char *format, ...)
+{
+    char str[STRBUF_SIZE] = { 0 };
+    va_list va;
+    va_start(va, format);
+    vsnprintf(str, STRBUF_SIZE, format, va);
+    va_end(va);
+    
+    u32 w = GetDrawStringWidth(str);
+    u32 h = GetDrawStringHeight(str);
+    int x = (w >= SCREEN_WIDTH(screen)) ? 0 : (SCREEN_WIDTH(screen) - w) >> 1;
+    int y = (h >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - h) >> 1;
+    
+    DrawStringF(screen, x, y, color, bgcolor, "%s", str);
 }
 
 u32 GetDrawStringHeight(const char* str) {
-    u32 height = FONT_HEIGHT;
+    u32 height = font_height;
     for (char* lf = strchr(str, '\n'); (lf != NULL); lf = strchr(lf + 1, '\n'))
-        height += 10;
+        height += line_height;
     return height;
 }
 
@@ -162,14 +298,22 @@ u32 GetDrawStringWidth(const char* str) {
     }
     if ((u32) (str_end - old_lf) > width)
         width = str_end - old_lf;
-    width *= FONT_WIDTH;
+    width *= font_width;
     return width;
+}
+
+u32 GetFontWidth(void) {
+    return font_width;
+}
+
+u32 GetFontHeight(void) {
+    return font_height;
 }
 
 void WordWrapString(char* str, int llen) {
     char* last_brk = str - 1;
     char* last_spc = str - 1;
-    if (!llen) llen = (SCREEN_WIDTH_MAIN / FONT_WIDTH);
+    if (!llen) llen = (SCREEN_WIDTH_MAIN / font_width);
     for (char* str_ptr = str;; str_ptr++) {
         if (!*str_ptr || (*str_ptr == ' ')) { // on space or string_end
             if (str_ptr - last_brk > llen) { // if maximum line lenght is exceeded
@@ -202,10 +346,8 @@ void TruncateString(char* dest, const char* orig, int nsize, int tpos) {
     int osize = strnlen(orig, 256);
     if (nsize < 0) {
         return;
-    } else if (nsize <= 3) {
-        snprintf(dest, nsize, orig);
-    } else if (nsize >= osize) {
-        snprintf(dest, nsize + 1, orig);
+    } else if ((nsize <= 3) || (nsize >= osize)) {
+        snprintf(dest, nsize + 1, "%s", orig);
     } else {
         if (tpos + 3 > nsize) tpos = nsize - 3;
         snprintf(dest, nsize + 1, "%-.*s...%-.*s", tpos, orig, nsize - (3 + tpos), orig + osize - (nsize - (3 + tpos)));
@@ -238,22 +380,14 @@ void FormatBytes(char* str, u64 bytes) { // str should be 32 byte in size, just 
 void ShowString(const char *format, ...)
 {
     if (format && *format) { // only if there is something in there
-        u32 str_width, str_height;
-        u32 x, y;
-        
         char str[STRBUF_SIZE] = { 0 };
         va_list va;
         va_start(va, format);
         vsnprintf(str, STRBUF_SIZE, format, va);
         va_end(va);
         
-        str_width = GetDrawStringWidth(str);
-        str_height = GetDrawStringHeight(str);
-        x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
-        y = (str_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - str_height) / 2;
-        
         ClearScreenF(true, false, COLOR_STD_BG);
-        DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, str);
+        DrawStringCenter(MAIN_SCREEN, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
     } else ClearScreenF(true, false, COLOR_STD_BG);
 }
 
@@ -281,13 +415,11 @@ void ShowIconString(u8* icon, int w, int h, const char *format, ...)
     y_bmp = (tot_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - tot_height) / 2;
     
     DrawBitmap(MAIN_SCREEN, x_bmp, y_bmp, w, h, icon);
-    DrawStringF(MAIN_SCREEN, x_str, y_str, COLOR_STD_FONT, COLOR_STD_BG, str);
+    DrawStringF(MAIN_SCREEN, x_str, y_str, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
 }
 
 bool ShowPrompt(bool ask, const char *format, ...)
 {
-    u32 str_width, str_height;
-    u32 x, y;
     bool ret = true;
     
     char str[STRBUF_SIZE] = { 0 };
@@ -296,15 +428,9 @@ bool ShowPrompt(bool ask, const char *format, ...)
     vsnprintf(str, STRBUF_SIZE, format, va);
     va_end(va);
     
-    str_width = GetDrawStringWidth(str);
-    str_height = GetDrawStringHeight(str) + (2 * 10);
-    if (str_width < 18 * FONT_WIDTH) str_width = 18 * FONT_WIDTH;
-    x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
-    y = (str_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - str_height) / 2;
-    
     ClearScreenF(true, false, COLOR_STD_BG);
-    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, str);
-    DrawStringF(MAIN_SCREEN, x, y + str_height - (1*10), COLOR_STD_FONT, COLOR_STD_BG, (ask) ? "(<A> yes, <B> no)" : "(<A> to continue)");
+    DrawStringCenter(MAIN_SCREEN, COLOR_STD_FONT, COLOR_STD_BG, "%s\n \n%s", str,
+        (ask) ? "(<A> yes, <B> no)" : "(<A> to continue)");
     
     while (true) {
         u32 pad_state = InputWait(0);
@@ -346,8 +472,8 @@ bool ShowUnlockSequence(u32 seqlvl, const char *format, ...) {
     va_end(va);
     
     str_width = GetDrawStringWidth(str);
-    str_height = GetDrawStringHeight(str) + (4*10);
-    if (str_width < 24 * FONT_WIDTH) str_width = 24 * FONT_WIDTH;
+    str_height = GetDrawStringHeight(str) + (4*line_height);
+    if (str_width < 24 * font_width) str_width = 24 * font_width;
     x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
     y = (str_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - str_height) / 2;
     
@@ -359,7 +485,7 @@ bool ShowUnlockSequence(u32 seqlvl, const char *format, ...) {
     }
     
     ClearScreenF(true, false, color_bg);
-    DrawStringF(MAIN_SCREEN, x, y, color_font, color_bg, str);
+    DrawStringF(MAIN_SCREEN, x, y, color_font, color_bg, "%s", str);
     #ifndef TIMER_UNLOCK
     DrawStringF(MAIN_SCREEN, x, y + str_height - 28, color_font, color_bg, "To proceed, enter this:");
     
@@ -382,7 +508,7 @@ bool ShowUnlockSequence(u32 seqlvl, const char *format, ...) {
     
     while (true) {
         for (u32 n = 0; n < seqlen; n++) {
-            DrawStringF(MAIN_SCREEN, x + (n*4*FONT_WIDTH_EXT), y + str_height - 18,
+            DrawStringF(MAIN_SCREEN, x + (n*4*FONT_WIDTH_EXT), y + str_height - 28 + line_height,
                 (lvl > n) ? color_on : color_off, color_bg, "<%c>", seqsymbols[n]);
         }
         if (lvl == seqlen)
@@ -390,7 +516,7 @@ bool ShowUnlockSequence(u32 seqlvl, const char *format, ...) {
         u32 pad_state = InputWait(0);
         if (!(pad_state & BUTTON_ANY))
             continue;
-        else if (pad_state & sequence[lvl])
+        else if ((pad_state & BUTTON_ANY) == sequence[lvl])
             lvl++;
         else if (pad_state & BUTTON_B)
             break;
@@ -441,8 +567,8 @@ u32 ShowSelectPrompt(u32 n, const char** options, const char *format, ...) {
     // else if (n == 1) return ShowPrompt(true, "%s\n%s?", str, options[0]) ? 1 : 0;
     
     str_width = GetDrawStringWidth(str);
-    str_height = GetDrawStringHeight(str) + (n * 12) + (3 * 10);
-    if (str_width < 24 * FONT_WIDTH) str_width = 24 * FONT_WIDTH;
+    str_height = GetDrawStringHeight(str) + (n * (line_height + 2)) + (3 * line_height);
+    if (str_width < 24 * font_width) str_width = 24 * font_width;
     for (u32 i = 0; i < n; i++) if (str_width < GetDrawStringWidth(options[i]))
         str_width = GetDrawStringWidth(options[i]);
     x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
@@ -450,11 +576,11 @@ u32 ShowSelectPrompt(u32 n, const char** options, const char *format, ...) {
     yopt = y + GetDrawStringHeight(str) + 8;
     
     ClearScreenF(true, false, COLOR_STD_BG);
-    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, str);
-    DrawStringF(MAIN_SCREEN, x, yopt + (n*12) + 10, COLOR_STD_FONT, COLOR_STD_BG, "(<A> select, <B> cancel)");
+    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
+    DrawStringF(MAIN_SCREEN, x, yopt + (n*(line_height+2)) + line_height, COLOR_STD_FONT, COLOR_STD_BG, "(<A> select, <B> cancel)");
     while (true) {
         for (u32 i = 0; i < n; i++) {
-            DrawStringF(MAIN_SCREEN, x, yopt + (12*i), (sel == i) ? COLOR_STD_FONT : COLOR_LIGHTGREY, COLOR_STD_BG, "%2.2s %s",
+            DrawStringF(MAIN_SCREEN, x, yopt + ((line_height+2)*i), (sel == i) ? COLOR_STD_FONT : COLOR_LIGHTGREY, COLOR_STD_BG, "%2.2s %s",
                 (sel == i) ? "->" : "", options[i]);
         }
         u32 pad_state = InputWait(0);
@@ -472,6 +598,41 @@ u32 ShowSelectPrompt(u32 n, const char** options, const char *format, ...) {
     return (sel >= n) ? 0 : sel + 1;
 }
 
+u32 ShowHotkeyPrompt(u32 n, const char** options, const u32* keys, const char *format, ...) {
+    char str[STRBUF_SIZE] = { 0 };
+    char* ptr = str;
+    va_list va;
+    va_start(va, format);
+    ptr += vsnprintf(ptr, STRBUF_SIZE, format, va);
+    va_end(va);
+    
+    ptr += snprintf(ptr, STRBUF_SIZE - (ptr-str), "\n ");
+    for (u32 i = 0; i < n; i++) {
+        char buttonstr[16];
+        ButtonToString(keys[i], buttonstr);
+        ptr += snprintf(ptr, STRBUF_SIZE - (ptr-str), "\n<%s> %s", buttonstr, options[i]);
+    }
+    ptr += snprintf(ptr, STRBUF_SIZE - (ptr-str), "\n \n<%s> %s", "B", "cancel");
+
+    ClearScreenF(true, false, COLOR_STD_BG);
+    DrawStringCenter(MAIN_SCREEN, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
+
+    u32 sel = 0;
+    while (!sel) {
+        u32 pad_state = InputWait(0);
+        if (pad_state & BUTTON_B) break;
+        for (u32 i = 0; i < n; i++) {
+            if (keys[i] & pad_state) {
+                sel = i+1;
+                break;
+            }
+        }
+    }
+
+    ClearScreenF(true, false, COLOR_STD_BG);
+    return sel;
+}
+
 bool ShowInputPrompt(char* inputstr, u32 max_size, u32 resize, const char* alphabet, const char *format, va_list va) {
     const u32 alphabet_size = strnlen(alphabet, 256);
     const u32 input_shown = 22;
@@ -483,7 +644,7 @@ bool ShowInputPrompt(char* inputstr, u32 max_size, u32 resize, const char* alpha
     char str[STRBUF_SIZE] = { 0 };
     vsnprintf(str, STRBUF_SIZE, format, va);
     
-    // check / fix up the inputstring if required
+    // check / fix up the input string if required
     if (max_size < 2) return false; // catching this, too
     if ((*inputstr == '\0') || (resize && (strnlen(inputstr, max_size - 1) % resize))) {
         memset(inputstr, alphabet[0], resize); // set the string if it is not set or invalid
@@ -492,14 +653,15 @@ bool ShowInputPrompt(char* inputstr, u32 max_size, u32 resize, const char* alpha
     
     str_width = GetDrawStringWidth(str);
     str_height = GetDrawStringHeight(str) + 88;
-    if (str_width < (24 * FONT_WIDTH)) str_width = 24 * FONT_WIDTH;
+    if (str_width < (24 * font_width)) str_width = 24 * font_width;
     x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
     y = (str_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - str_height) / 2;
     
     ClearScreenF(true, false, COLOR_STD_BG);
-    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, str);
+    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
     DrawStringF(MAIN_SCREEN, x + 8, y + str_height - 40, COLOR_STD_FONT, COLOR_STD_BG,
         "R - (\x18\x19) fast scroll\nL - clear data%s", resize ? "\nX - remove char\nY - insert char" : "");
+    
     int cursor_a = -1;
     u32 cursor_s = 0;
     u32 scroll = 0;
@@ -530,25 +692,28 @@ bool ShowInputPrompt(char* inputstr, u32 max_size, u32 resize, const char* alpha
         if (cursor_a < 0) {
             for (cursor_a = alphabet_size - 1; (cursor_a > 0) && (alphabet[cursor_a] != inputstr[cursor_s]); cursor_a--);
         }
+        
         // alphabet preview
-        if (alphabet_size > (SCREEN_WIDTH(MAIN_SCREEN) / FONT_WIDTH)) {
+        if (alphabet_size > (SCREEN_WIDTH(MAIN_SCREEN) / font_width)) {
             const u32 aprv_y = y + str_height - 60;
             if (aprv) {
                 const u32 aprv_pad = 1;
-                const u32 aprv_cx = x + ((1 + cursor_s - scroll) * FONT_WIDTH);
-                u32 aprv_x = aprv_cx % (FONT_WIDTH + aprv_pad);
-                u32 aprv_n = ((SCREEN_WIDTH(MAIN_SCREEN) - aprv_x) / (FONT_WIDTH + aprv_pad)) - 1;
-                int aprv_a = cursor_a - ((aprv_cx - aprv_x) / (FONT_WIDTH + aprv_pad));
+                const u32 aprv_cx = x + ((1 + cursor_s - scroll) * font_width);
+                u32 aprv_x = aprv_cx % (font_width + aprv_pad);
+                u32 aprv_n = ((SCREEN_WIDTH(MAIN_SCREEN) - aprv_x) / (font_width + aprv_pad)) - 1;
+                int aprv_a = cursor_a - ((aprv_cx - aprv_x) / (font_width + aprv_pad));
                 while (aprv_a < 0) aprv_a += alphabet_size;
                 for (u32 i = 0; i < aprv_n; i++) {
                     DrawCharacter(MAIN_SCREEN, alphabet[aprv_a], aprv_x, aprv_y,
                         (aprv_a == cursor_a) ? COLOR_WHITE : COLOR_GREY, COLOR_STD_BG);
                     if (++aprv_a >= (int) alphabet_size) aprv_a -= alphabet_size;
-                    aprv_x += FONT_WIDTH + aprv_pad;
+                    aprv_x += font_width + aprv_pad;
                 }
-            } else DrawRectangle(MAIN_SCREEN, 0, aprv_y, SCREEN_WIDTH(MAIN_SCREEN), FONT_HEIGHT, COLOR_STD_BG);
+            } else DrawRectangle(MAIN_SCREEN, 0, aprv_y, SCREEN_WIDTH(MAIN_SCREEN), font_height, COLOR_STD_BG);
         }
-        u32 pad_state = InputWait(0);
+        
+        u32 pad_state = InputWait(3);
+        aprv = (pad_state & (BUTTON_UP|BUTTON_DOWN|BUTTON_R1)) && !(pad_state & (BUTTON_RIGHT|BUTTON_LEFT));
         if (pad_state & BUTTON_A) {
             ret = true;
             break;
@@ -613,7 +778,7 @@ bool ShowInputPrompt(char* inputstr, u32 max_size, u32 resize, const char* alpha
 }
 
 bool ShowStringPrompt(char* inputstr, u32 max_size, const char *format, ...) {
-    const char* alphabet = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ(){}[]'`^,~*?!@#$%&=+-_.9876543210";
+    const char* alphabet = " aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStTuUvVwWxXyYzZ(){}[]'`^,~*?!@#$%&=+-_.9876543210";
     bool ret = false;
     va_list va;
     
@@ -706,13 +871,13 @@ bool ShowRtcSetterPrompt(void* time, const char *format, ...) {
     }
     
     str_width = GetDrawStringWidth(str);
-    str_height = GetDrawStringHeight(str) + (4*10);
-    if (str_width < (19 * FONT_WIDTH)) str_width = 19 * FONT_WIDTH;
+    str_height = GetDrawStringHeight(str) + (4*line_height);
+    if (str_width < (19 * font_width)) str_width = 19 * font_width;
     x = (str_width >= SCREEN_WIDTH_MAIN) ? 0 : (SCREEN_WIDTH_MAIN - str_width) / 2;
     y = (str_height >= SCREEN_HEIGHT) ? 0 : (SCREEN_HEIGHT - str_height) / 2;
     
     ClearScreenF(true, false, COLOR_STD_BG);
-    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, str);
+    DrawStringF(MAIN_SCREEN, x, y, COLOR_STD_FONT, COLOR_STD_BG, "%s", str);
     
     int cursor = 0;
     bool ret = false;
@@ -770,11 +935,13 @@ bool ShowProgress(u64 current, u64 total, const char* opstr)
     char tempstr[64];
     char progstr[64];
     
+    static u64 last_msec_elapsed = 0;
     static u64 last_sec_remain = 0;
     if (!current) {
         timer = timer_start();
         last_sec_remain = 0;
-    }
+    } else if (timer_msec(timer) < last_msec_elapsed + PROGRESS_REFRESH_RATE) return !CheckButton(BUTTON_B);
+    last_msec_elapsed = timer_msec(timer);
     u64 sec_elapsed = (total > 0) ? timer_sec( timer ) : 0;
     u64 sec_total = (current > 0) ? (sec_elapsed * total) / current : 0;
     u64 sec_remain = (!last_sec_remain) ? (sec_total - sec_elapsed) : ((last_sec_remain + (sec_total - sec_elapsed) + 1) / 2);
@@ -789,17 +956,17 @@ bool ShowProgress(u64 current, u64 total, const char* opstr)
     DrawRectangle(MAIN_SCREEN, bar_pos_x + 2, bar_pos_y + 2, prog_width, bar_height - 4, COLOR_STD_FONT);
     DrawRectangle(MAIN_SCREEN, bar_pos_x + 2 + prog_width, bar_pos_y + 2, (bar_width-4) - prog_width, bar_height - 4, COLOR_STD_BG);
     
-    TruncateString(progstr, opstr, (bar_width / FONT_WIDTH_EXT) - 7, 8);
+    TruncateString(progstr, opstr, min(63, (bar_width / FONT_WIDTH_EXT) - 7), 8);
     snprintf(tempstr, 64, "%s (%lu%%)", progstr, prog_percent);
     ResizeString(progstr, tempstr, bar_width / FONT_WIDTH_EXT, 8, false);
-    DrawString(MAIN_SCREEN, progstr, bar_pos_x, text_pos_y, COLOR_STD_FONT, COLOR_STD_BG);
+    DrawString(MAIN_SCREEN, progstr, bar_pos_x, text_pos_y, COLOR_STD_FONT, COLOR_STD_BG, true);
     if (sec_elapsed >= 1) {
         snprintf(tempstr, 16, "ETA %02llum%02llus", sec_remain / 60, sec_remain % 60);
         ResizeString(progstr, tempstr, 16, 8, true);
         DrawString(MAIN_SCREEN, progstr, bar_pos_x + bar_width - 1 - (FONT_WIDTH_EXT * 16),
-            bar_pos_y - 10 - 1, COLOR_STD_FONT, COLOR_STD_BG);
+            bar_pos_y - line_height - 1, COLOR_STD_FONT, COLOR_STD_BG, true);
     }
-    DrawString(MAIN_SCREEN, "(hold B to cancel)", bar_pos_x + 2, text_pos_y + 14, COLOR_STD_FONT, COLOR_STD_BG);
+    DrawString(MAIN_SCREEN, "(hold B to cancel)", bar_pos_x + 2, text_pos_y + 14, COLOR_STD_FONT, COLOR_STD_BG, false);
     
     last_prog_width = prog_width;
     

@@ -1,6 +1,8 @@
 #include "tmd.h"
 #include "unittype.h"
+#include "cert.h"
 #include "sha.h"
+#include "rsa.h"
 #include "ff.h"
 
 u32 ValidateTmd(TitleMetaData* tmd) {
@@ -9,6 +11,48 @@ u32 ValidateTmd(TitleMetaData* tmd) {
         ((strncmp((char*) tmd->issuer, TMD_ISSUER, 0x40) != 0) &&
         (strncmp((char*) tmd->issuer, TMD_ISSUER_DEV, 0x40) != 0)))
         return 1;
+    return 0;
+}
+
+u32 ValidateTmdSignature(TitleMetaData* tmd) {
+    static bool got_modexp = false;
+    static u8 mod[0x100] = { 0 };
+    static u32 exp = 0;
+    
+    if (!got_modexp) {
+        // grab mod/exp from cert from cert.db
+        if (LoadCertFromCertDb(0x3C10, NULL, mod, &exp) == 0)
+            got_modexp = true;
+        else return 1;
+    }
+    
+    if (!RSA_setKey2048(3, mod, exp) ||
+        !RSA_verify2048((void*) &(tmd->signature), (void*) &(tmd->issuer), 0xC4))
+        return 1;
+        
+    return 0;
+}
+
+u32 VerifyTmd(TitleMetaData* tmd) {
+    TmdContentChunk* content_list = (TmdContentChunk*) (tmd + 1);
+    u32 content_count = getbe16(tmd->content_count);
+
+    // TMD validation
+    if (ValidateTmd(tmd) != 0) return 1;
+
+    // check content info hash
+    if (sha_cmp(tmd->contentinfo_hash, (u8*)tmd->contentinfo, 64 * sizeof(TmdContentInfo), SHA256_MODE) != 0)
+        return 1;
+
+    // check hashes in content info
+    for (u32 i = 0, kc = 0; i < 64 && kc < content_count; i++) {
+        TmdContentInfo* info = tmd->contentinfo + i;
+        u32 k = getbe16(info->cmd_count);
+        if (sha_cmp(info->hash, content_list + kc, k * sizeof(TmdContentChunk), SHA256_MODE) != 0)
+            return 1;
+        kc += k;
+    }
+
     return 0;
 }
 
@@ -35,7 +79,7 @@ u32 FixTmdHashes(TitleMetaData* tmd) {
 u32 BuildFakeTmd(TitleMetaData* tmd, u8* title_id, u32 n_contents, u32 save_size) {
     const u8 sig_type[4] =  { TMD_SIG_TYPE };
     // safety check: number of contents
-    if (n_contents > TMD_MAX_CONTENTS) return 1; // !!!
+    if (n_contents > TMD_MAX_CONTENTS) return 1; // potential incompatibility here (!)
     // set TMD all zero for a clean start
     memset(tmd, 0x00, TMD_SIZE_N(n_contents));
     // file TMD values

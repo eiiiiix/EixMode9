@@ -11,8 +11,8 @@
 #include "ff.h"
 #include "ui.h"
 
-#define SKIP_CUR        (1UL<< 9)
-#define OVERWRITE_CUR   (1UL<<10)
+#define SKIP_CUR        (1UL<<10)
+#define OVERWRITE_CUR   (1UL<<11)
 
 #define _MAX_FS_OPT     8 // max file selector options
 
@@ -48,7 +48,12 @@ bool FormatSDCard(u64 hidden_mb, u32 cluster_size, const char* label) {
         ShowPrompt(false, "Error: SD card is too small");
         return false;
     }
-    sd_size = fat_size;
+    
+    // Write protection check
+    if (SD_WRITE_PROTECTED) {
+        ShowPrompt(false, "SD card is write protected!\nCan't continue.");
+        return false;
+    }
     
     // build the MBR
     memcpy(mbrdata + 0x08, &fat_sector, 4);
@@ -77,9 +82,14 @@ bool FormatSDCard(u64 hidden_mb, u32 cluster_size, const char* label) {
     VolToPart[0].pt = 1; // workaround to prevent FatFS rebuilding the MBR
     InitSDCardFS();
     UINT c_size = cluster_size;
-    bool ret = ((f_mkfs("0:", FM_FAT32, c_size, MAIN_BUFFER, MAIN_BUFFER_SIZE) == FR_OK) || 
-        (f_mkfs("0:", FM_FAT32, 0, MAIN_BUFFER, MAIN_BUFFER_SIZE) == FR_OK)) &&
+    
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) bkpt; // will not happen
+    bool ret = ((f_mkfs("0:", FM_FAT32, c_size, buffer, STD_BUFFER_SIZE) == FR_OK) || 
+        (f_mkfs("0:", FM_FAT32, 0, buffer, STD_BUFFER_SIZE) == FR_OK)) &&
         (f_setlabel((label) ? label : "0:GM9SD") == FR_OK);
+    free(buffer);
+    
     DeinitSDCardFS();
     VolToPart[0].pt = 0; // revert workaround to prevent SD mount problems
     
@@ -91,7 +101,12 @@ bool SetupBonusDrive(void) {
         return false;
     ShowString("Formatting drive, please wait...");
     if (GetMountState() & IMG_NAND) InitImgFS(NULL);
-    bool ret = (f_mkfs("8:", FM_ANY, 0, MAIN_BUFFER, MAIN_BUFFER_SIZE) == FR_OK);
+    
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) bkpt;
+    bool ret = (f_mkfs("8:", FM_ANY, 0, buffer, STD_BUFFER_SIZE) == FR_OK);
+    free(buffer);
+    
     if (ret) {
         f_setlabel("8:BONUS");
         InitExtFS();
@@ -146,23 +161,32 @@ bool FileGetSha256(const char* path, u8* sha256, u64 offset, u64 size) {
     
     if (fvx_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
         return false;
+    
     fsize = fvx_size(&file);
     if (offset + size > fsize) return false;
     if (!size) size = fsize - offset;
     fvx_lseek(&file, offset);
+    
+    u32 bufsiz = min(STD_BUFFER_SIZE, fsize);
+    u8* buffer = (u8*) malloc(bufsiz);
+    if (!buffer) return false;
+    
     ShowProgress(0, 0, path);
     sha_init(SHA256_MODE);
-    for (u64 pos = 0; (pos < size) && ret; pos += MAIN_BUFFER_SIZE) {
-        UINT read_bytes = min(MAIN_BUFFER_SIZE, size - pos);
+    for (u64 pos = 0; (pos < size) && ret; pos += bufsiz) {
+        UINT read_bytes = min(bufsiz, size - pos);
         UINT bytes_read = 0;
-        if (fvx_read(&file, MAIN_BUFFER, read_bytes, &bytes_read) != FR_OK)
+        if (fvx_read(&file, buffer, read_bytes, &bytes_read) != FR_OK)
             ret = false;
         if (!ShowProgress(pos + bytes_read, size, path))
             ret = false;
-        sha_update(MAIN_BUFFER, bytes_read);
+        sha_update(buffer, bytes_read);
     }
+    
     sha_get(sha256);
     fvx_close(&file);
+    free(buffer);
+    
     ShowProgress(1, 1, path);
     
     return ret;
@@ -176,20 +200,23 @@ u32 FileFindData(const char* path, u8* data, u32 size_data, u32 offset_file) {
     if (fvx_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
         return found;
     
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) return false;
+    
     // main routine
     for (u32 pass = 0; pass < 2; pass++) {
         bool show_progress = false;
         u64 pos = (pass == 0) ? offset_file : 0;
         u64 search_end = (pass == 0) ? fsize : offset_file + size_data;
         search_end = (search_end > fsize) ? fsize : search_end;
-        for (; (pos < search_end) && (found == (u64) -1); pos += MAIN_BUFFER_SIZE - (size_data - 1)) {
-            UINT read_bytes = min(MAIN_BUFFER_SIZE, search_end - pos);
+        for (; (pos < search_end) && (found == (u64) -1); pos += STD_BUFFER_SIZE - (size_data - 1)) {
+            UINT read_bytes = min(STD_BUFFER_SIZE, search_end - pos);
             UINT btr;
             fvx_lseek(&file, pos);
-            if ((fvx_read(&file, MAIN_BUFFER, read_bytes, &btr) != FR_OK) || (btr != read_bytes))
+            if ((fvx_read(&file, buffer, read_bytes, &btr) != FR_OK) || (btr != read_bytes))
                 break;
             for (u32 i = 0; i + size_data <= read_bytes; i++) {
-                if (memcmp(MAIN_BUFFER + i, data, size_data) == 0) {
+                if (memcmp(buffer + i, data, size_data) == 0) {
                     found = pos + i;
                     break;
                 }
@@ -202,6 +229,8 @@ u32 FileFindData(const char* path, u8* data, u32 size_data, u32 offset_file) {
                 break;
         }
     }
+    
+    free(buffer);
     fvx_close(&file);
     
     return found;
@@ -244,14 +273,17 @@ bool FileInjectFile(const char* dest, const char* orig, u64 off_dest, u64 off_or
         return false;
     }
     
+    u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+    if (!buffer) return false;
+    
     bool ret = true;
     ShowProgress(0, 0, orig);
-    for (u64 pos = 0; (pos < size) && ret; pos += MAIN_BUFFER_SIZE) {
-        UINT read_bytes = min(MAIN_BUFFER_SIZE, size - pos);
+    for (u64 pos = 0; (pos < size) && ret; pos += STD_BUFFER_SIZE) {
+        UINT read_bytes = min(STD_BUFFER_SIZE, size - pos);
         UINT bytes_read = read_bytes;
         UINT bytes_written = read_bytes;
-        if ((fvx_read(&ofile, MAIN_BUFFER, read_bytes, &bytes_read) != FR_OK) ||
-            (fvx_write(&dfile, MAIN_BUFFER, read_bytes, &bytes_written) != FR_OK) ||
+        if ((fvx_read(&ofile, buffer, read_bytes, &bytes_read) != FR_OK) ||
+            (fvx_write(&dfile, buffer, read_bytes, &bytes_written) != FR_OK) ||
             (bytes_read != bytes_written))
             ret = false;
         if (ret && !ShowProgress(pos + bytes_read, size, orig)) {
@@ -264,8 +296,58 @@ bool FileInjectFile(const char* dest, const char* orig, u64 off_dest, u64 off_or
     }
     ShowProgress(1, 1, orig);
     
+    free(buffer);
     fvx_close(&dfile);
     fvx_close(&ofile);
+    
+    return ret;
+}
+
+bool FileSetByte(const char* dest, u64 offset, u64 size, u8 fillbyte, u32* flags) {
+    FIL dfile;
+    bool allow_expand = (flags && (*flags & ALLOW_EXPAND));
+    
+    if (!CheckWritePermissions(dest)) return false;
+    
+    // open destination
+    if (fvx_open(&dfile, dest, FA_WRITE | ((allow_expand) ? FA_OPEN_ALWAYS : FA_OPEN_EXISTING)) != FR_OK)
+        return false;
+    fvx_lseek(&dfile, offset);
+    if (!size && (offset < fvx_size(&dfile)))
+        size = fvx_size(&dfile) - offset;
+    
+    // check file limits
+    if (!allow_expand && (offset + size > fvx_size(&dfile))) {
+        ShowPrompt(false, "Operation would write beyond end of file");
+        fvx_close(&dfile);
+        return false;
+    }
+    
+    u32 bufsiz = min(STD_BUFFER_SIZE, size);
+    u8* buffer = (u8*) malloc(bufsiz);
+    if (!buffer) return false;
+    memset(buffer, fillbyte, bufsiz);
+    
+    bool ret = true;
+    ShowProgress(0, 0, dest);
+    for (u64 pos = 0; (pos < size) && ret; pos += bufsiz) {
+        UINT write_bytes = min(bufsiz, size - pos);
+        UINT bytes_written = write_bytes;
+        if ((fvx_write(&dfile, buffer, write_bytes, &bytes_written) != FR_OK) ||
+            (write_bytes != bytes_written))
+            ret = false;
+        if (ret && !ShowProgress(pos + bytes_written, size, dest)) {
+            if (flags && (*flags & NO_CANCEL)) {
+                ShowPrompt(false, "Cancel is not allowed here");
+            } else ret = !ShowPrompt(true, "B button detected. Cancel?");
+            ShowProgress(0, 0, dest);
+            ShowProgress(pos + bytes_written, size, dest);
+        }
+    }
+    ShowProgress(1, 1, dest);
+    
+    free(buffer);
+    fvx_close(&dfile);
     
     return ret;
 }
@@ -273,7 +355,8 @@ bool FileInjectFile(const char* dest, const char* orig, u64 off_dest, u64 off_or
 bool FileCreateDummy(const char* cpath, const char* filename, u64 size) {
     char npath[256]; // 256 is the maximum length of a full path
     if (!CheckWritePermissions(cpath)) return false;
-    snprintf(npath, 255, "%s/%s", cpath, filename);
+    if (filename) snprintf(npath, 255, "%s/%s", cpath, filename);
+    else snprintf(npath, 255, "%s", cpath);
     
     // create dummy file (fail if already existing)
     // then, expand the file size via cluster preallocation
@@ -284,14 +367,15 @@ bool FileCreateDummy(const char* cpath, const char* filename, u64 size) {
     f_sync(&dfile);
     fx_close(&dfile);
     
-    return true;
+    return (fa_stat(npath, NULL) == FR_OK);
 }
 
 bool DirCreate(const char* cpath, const char* dirname) {
     char npath[256]; // 256 is the maximum length of a full path
     if (!CheckWritePermissions(cpath)) return false;
     snprintf(npath, 255, "%s/%s", cpath, dirname);
-    return (fa_mkdir(npath) == FR_OK);
+    if (fa_mkdir(npath) != FR_OK) return false;
+    return (fa_stat(npath, NULL) == FR_OK);
 }
 
 bool DirInfoWorker(char* fpath, bool virtual, u64* tsize, u32* tdirs, u32* tfiles) {
@@ -341,7 +425,8 @@ bool DirInfoWorker(char* fpath, bool virtual, u64* tsize, u32* tdirs, u32* tfile
 bool DirInfo(const char* path, u64* tsize, u32* tdirs, u32* tfiles) {
     bool virtual = (DriveType(path) & DRV_VIRTUAL);
     char fpath[256];
-    strncpy(fpath, path, 255);
+    strncpy(fpath, path, 256);
+    fpath[255] = '\0';
     *tsize = *tdirs = *tfiles = 0;
     bool res = DirInfoWorker(fpath, virtual, tsize, tdirs, tfiles);
     return res;
@@ -351,9 +436,11 @@ bool PathExist(const char* path) {
     return (fvx_stat(path, NULL) == FR_OK);
 }
 
-bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move) {
+bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move, u8* buffer, u32 bufsiz) {
     bool to_virtual = GetVirtualSource(dest);
     bool silent = (flags && (*flags & SILENT));
+    bool append = (flags && (*flags & APPEND_ALL));
+    bool calcsha = (flags && (*flags & CALC_SHA) && !append);
     bool ret = false;
     
     // check destination write permission (special paths only)
@@ -380,6 +467,11 @@ bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move) {
         DIR pdir;
         char* fname = orig + strnlen(orig, 256);
         
+        if (append) {
+            if (!silent) ShowPrompt(false, "%s\nError: Cannot append a folder", deststr);
+            return false;
+        }
+        
         // create the destination folder if it does not already exist
         if (fvx_opendir(&pdir, dest) != FR_OK) {
             if (fvx_mkdir(dest) != FR_OK) {
@@ -404,14 +496,15 @@ bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move) {
                 char* oname = strrchr(orig, '/');
                 char* dname = dest + strnlen(dest, 255);
                 if (oname == NULL) return false; // not a proper origin path
-                *(dname++) = '/';
-                strncpy(dname, oname++, 256 - (dname - dest));
-                bool res = PathMoveCopyRec(dest, orig, flags, move);
-                *(--dname) = '\0';
+                strncpy(dname, oname, 256 - (dname - dest)); // copy name plus preceding '/'
+                bool res = PathMoveCopyRec(dest, orig, flags, move, buffer, bufsiz);
+                *dname = '\0';
                 if (!res) break;
             }
         }
+        
         fvx_closedir(&pdir);
+        *(--fname) = '\0';
     } else if (move) { // moving if destination exists
         if (fvx_stat(dest, &fno) != FR_OK) return false;
         if (fno.fattrib & AM_DIR) {
@@ -423,7 +516,8 @@ bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move) {
     } else { // copying files
         FIL ofile;
         FIL dfile;
-        u64 fsize;
+        u64 osize;
+        u64 dsize;
         
         if (fvx_open(&ofile, orig, FA_READ | FA_OPEN_EXISTING) != FR_OK) {
             if (!FileUnlock(orig) || (fvx_open(&ofile, orig, FA_READ | FA_OPEN_EXISTING) != FR_OK))
@@ -431,48 +525,54 @@ bool PathMoveCopyRec(char* dest, char* orig, u32* flags, bool move) {
             ShowProgress(0, 0, orig); // reinit progress bar
         }
         
-        if (fvx_open(&dfile, dest, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        if ((!append || (fvx_open(&dfile, dest, FA_WRITE | FA_OPEN_EXISTING) != FR_OK)) &&
+            (fvx_open(&dfile, dest, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)) {
             if (!silent) ShowPrompt(false, "%s\nError: Cannot open destination file", deststr);
             fvx_close(&ofile);
             return false;
         }
         
         ret = true; // destination file exists by now, so we need to handle deletion
-        fsize = fvx_size(&ofile); // check space via cluster preallocation
-        if ((fvx_lseek(&dfile, fsize) != FR_OK) || (fvx_sync(&dfile) != FR_OK)) {
+        osize = fvx_size(&ofile);
+        dsize = append ? fvx_size(&dfile) : 0; // always 0 if not appending to file
+        if ((fvx_lseek(&dfile, (osize + dsize)) != FR_OK) || (fvx_sync(&dfile) != FR_OK) || (fvx_tell(&dfile) != (osize + dsize))) { // check space via cluster preallocation
             if (!silent) ShowPrompt(false, "%s\nError: Not enough space available", deststr);
             ret = false;
         }
         
-        fvx_lseek(&dfile, 0);
+        fvx_lseek(&dfile, dsize);
         fvx_sync(&dfile);
         fvx_lseek(&ofile, 0);
         fvx_sync(&ofile);
         
-        if (flags && (*flags & CALC_SHA)) sha_init(SHA256_MODE);
-        for (u64 pos = 0; (pos < fsize) && ret; pos += MAIN_BUFFER_SIZE) {
+        if (calcsha) sha_init(SHA256_MODE);
+        for (u64 pos = 0; (pos < osize) && ret; pos += bufsiz) {
             UINT bytes_read = 0;
             UINT bytes_written = 0;            
-            if ((fvx_read(&ofile, MAIN_BUFFER, MAIN_BUFFER_SIZE, &bytes_read) != FR_OK) ||
-                (fvx_write(&dfile, MAIN_BUFFER, bytes_read, &bytes_written) != FR_OK) ||
+            if ((fvx_read(&ofile, buffer, bufsiz, &bytes_read) != FR_OK) ||
+                (fvx_write(&dfile, buffer, bytes_read, &bytes_written) != FR_OK) ||
                 (bytes_read != bytes_written))
                 ret = false;
-            if (ret && !ShowProgress(pos + bytes_read, fsize, orig)) {
+
+            u64 current = pos + bytes_read;
+            u64 total = osize;
+            if (ret && !ShowProgress(current, total, orig)) {
                 if (flags && (*flags & NO_CANCEL)) {
                     ShowPrompt(false, "%s\nCancel is not allowed here", deststr);
                 } else ret = !ShowPrompt(true, "%s\nB button detected. Cancel?", deststr);
                 ShowProgress(0, 0, orig);
-                ShowProgress(pos + bytes_read, fsize, orig);
+                ShowProgress(current, total, orig);
             }
-            if (flags && (*flags & CALC_SHA))
-                sha_update(MAIN_BUFFER, bytes_read);
+            if (calcsha)
+                sha_update(buffer, bytes_read);
         }
         ShowProgress(1, 1, orig);
         
         fvx_close(&ofile);
         fvx_close(&dfile);
-        if (!ret) fvx_unlink(dest);
-        else if (!to_virtual && flags && (*flags & CALC_SHA)) {
+        if (!ret && ((dsize == 0) || (fvx_lseek(&dfile, dsize) != FR_OK) || (f_truncate(&dfile) != FR_OK))) {
+            fvx_unlink(dest);
+        } else if (!to_virtual && calcsha) {
             u8 sha256[0x20];
             char* ext_sha = dest + strnlen(dest, 256);
             strncpy(ext_sha, ".sha", 256 - (ext_sha - dest));
@@ -530,7 +630,7 @@ bool PathMoveCopy(const char* dest, const char* orig, u32* flags, bool move) {
         }
         
         // check if destination exists
-        if (flags && !(*flags & (OVERWRITE_CUR|OVERWRITE_ALL)) && (fa_stat(ldest, NULL) == FR_OK)) {
+        if (flags && !(*flags & (OVERWRITE_CUR|OVERWRITE_ALL|APPEND_ALL)) && (fa_stat(ldest, NULL) == FR_OK)) {
             if (*flags & SKIP_ALL) {
                 *flags |= SKIP_CUR;
                 return true;
@@ -562,20 +662,29 @@ bool PathMoveCopy(const char* dest, const char* orig, u32* flags, bool move) {
         // ensure the destination path exists
         if (flags && (*flags & BUILD_PATH)) fvx_rmkpath(ldest);
         
+        // setup buffer
+        u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+        if (!buffer) {
+            ShowPrompt(false, "Out of memory.");
+            return false;
+        }
+        
         // actual move / copy operation
         bool same_drv = (strncasecmp(lorig, ldest, 2) == 0);
-        bool res = PathMoveCopyRec(ldest, lorig, flags, move && same_drv);
+        bool res = PathMoveCopyRec(ldest, lorig, flags, move && same_drv, buffer, STD_BUFFER_SIZE);
         if (move && res && (!flags || !(*flags&SKIP_CUR))) PathDelete(lorig);
+        
+        free(buffer);
         return res;
     } else { // virtual destination handling
         // can't write an SHA file to a virtual destination
-        if (flags) *flags |= ~CALC_SHA;
+        if (flags) *flags &= ~CALC_SHA;
         bool force_unmount = false;
         
         // handle NAND image unmounts
         if (ddrvtype & (DRV_SYSNAND|DRV_EMUNAND|DRV_IMAGE)) {
             FILINFO fno;
-            // virtual NAND files over 4 MB require unomunt, totally arbitrary limit (hacky!)
+            // virtual NAND files over 4 MB require unmount, totally arbitrary limit (hacky!)
             if ((fvx_stat(ldest, &fno) == FR_OK) && (fno.fsize > 4 * 1024 * 1024))
                 force_unmount = true;
         }
@@ -592,10 +701,19 @@ bool PathMoveCopy(const char* dest, const char* orig, u32* flags, bool move) {
             return false;
         }
         
+        // setup buffer
+        u8* buffer = (u8*) malloc(STD_BUFFER_SIZE);
+        if (!buffer) {
+            ShowPrompt(false, "Out of memory.");
+            return false;
+        }
+        
         // actual virtual copy operation
         if (force_unmount) DismountDriveType(DriveType(ldest)&(DRV_SYSNAND|DRV_EMUNAND|DRV_IMAGE));
-        bool res = PathMoveCopyRec(ldest, lorig, flags, false);
+        bool res = PathMoveCopyRec(ldest, lorig, flags, false, buffer, STD_BUFFER_SIZE);
         if (force_unmount) InitExtFS();
+        
+        free(buffer);
         return res;
     }
 }
@@ -666,7 +784,9 @@ bool PathRename(const char* path, const char* newname) {
     strncpy(npath, path, oldname - path);
     strncpy(npath + (oldname - path), newname, 255 - (oldname - path));
     
-    return (f_rename(path, npath) == FR_OK);
+    if (fvx_rename(path, npath) != FR_OK) return false;
+    if ((fvx_stat(path, NULL) == FR_OK) || (fvx_stat(npath, NULL) != FR_OK)) return false; // safety check
+    return true;
 }
 
 bool PathAttr(const char* path, u8 attr, u8 mask) {
@@ -674,10 +794,16 @@ bool PathAttr(const char* path, u8 attr, u8 mask) {
     return (f_chmod(path, attr, mask) == FR_OK);
 }
 
-bool FileSelector(char* result, const char* text, const char* path, const char* pattern, bool hide_ext, bool no_dirs) {
-    DirStruct* contents = (DirStruct*) (void*) TEMP_BUFFER;
+bool FileSelectorWorker(char* result, const char* text, const char* path, const char* pattern, u32 flags, void* buffer) {
+    DirStruct* contents = (DirStruct*) buffer;
     char path_local[256];
     strncpy(path_local, path, 256);
+    path_local[255] = '\0';
+    
+    bool no_dirs = flags & NO_DIRS;
+    bool no_files = flags & NO_FILES;
+    bool hide_ext = flags & HIDE_EXT;
+    bool select_dirs = flags & SELECT_DIRS;
     
     // main loop
     while (true) {
@@ -692,7 +818,7 @@ bool FileSelector(char* result, const char* text, const char* path, const char* 
             for (; pos < contents->n_entries; pos++) {
                 DirEntry* entry = &(contents->entry[pos]);
                 if (((entry->type == T_DIR) && no_dirs) ||
-                    ((entry->type == T_FILE) && (fvx_match_name(entry->name, pattern) != FR_OK)) ||
+                    ((entry->type == T_FILE) && (no_files || (fvx_match_name(entry->name, pattern) != FR_OK))) ||
                     (entry->type == T_DOTDOT) || (strncmp(entry->name, "._", 2) == 0))
                     continue;
                 if (n_opt == _MAX_FS_OPT) {
@@ -701,7 +827,7 @@ bool FileSelector(char* result, const char* text, const char* path, const char* 
                 }
                 
                 char temp_str[256];
-                snprintf(temp_str, 256, entry->name);
+                snprintf(temp_str, 256, "%s", entry->name);
                 if (hide_ext && (entry->type == T_FILE)) {
                     char* dot = strrchr(temp_str, '.');
                     if (dot) *dot = '\0';
@@ -716,12 +842,16 @@ bool FileSelector(char* result, const char* text, const char* path, const char* 
             
             const char* optionstr[_MAX_FS_OPT+1] = { NULL };
             for (u32 i = 0; i <= _MAX_FS_OPT; i++) optionstr[i] = opt_names[i];
-            u32 user_select = ShowSelectPrompt(n_opt, optionstr, text);
+            u32 user_select = ShowSelectPrompt(n_opt, optionstr, "%s", text);
             if (!user_select) return false;
             DirEntry* res_local = res_entry[user_select-1];
             if (res_local && (res_local->type == T_DIR)) { // selected dir
-                if (FileSelector(result, text, res_local->path, pattern, hide_ext, no_dirs))
+                if (select_dirs) {
+                    strncpy(result, res_local->path, 256);
                     return true;
+                } else if (FileSelectorWorker(result, text, res_local->path, pattern, flags, buffer)) {
+                    return true;
+                }
                 break;
             } else if (res_local && (res_local->type == T_FILE)) { // selected file
                 strncpy(result, res_local->path, 256);
@@ -737,32 +867,11 @@ bool FileSelector(char* result, const char* text, const char* path, const char* 
     }
 }
 
-void CreateScreenshot() {
-    const u8 bmp_header[54] = {
-        0x42, 0x4D, 0x36, 0xCA, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, 0x28, 0x00,
-        0x00, 0x00, 0x90, 0x01, 0x00, 0x00, 0xE0, 0x01, 0x00, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0xCA, 0x08, 0x00, 0x12, 0x0B, 0x00, 0x00, 0x12, 0x0B, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    };
-    u8* buffer = MAIN_BUFFER + 54;
-    u8* buffer_t = buffer + (400 * 240 * 3);
-    char filename[64];
-    static u32 n = 0;
+bool FileSelector(char* result, const char* text, const char* path, const char* pattern, u32 flags) {
+    void* buffer = (void*) malloc(sizeof(DirStruct));
+    if (!buffer) return false;
     
-    fvx_rmkdir(OUTPUT_PATH);
-    for (; n < 1000; n++) {
-        snprintf(filename, 64, OUTPUT_PATH "/snap%03i.bmp", (int) n);
-        if (fa_stat(filename, NULL) != FR_OK) break;
-    }
-    if (n >= 1000) return;
-    
-    memcpy(MAIN_BUFFER, bmp_header, 54);
-    memset(buffer, 0x1F, 400 * 240 * 3 * 2);
-    for (u32 x = 0; x < 400; x++)
-        for (u32 y = 0; y < 240; y++)
-            memcpy(buffer_t + (y*400 + x) * 3, TOP_SCREEN + (x*240 + y) * 3, 3);
-    for (u32 x = 0; x < 320; x++)
-        for (u32 y = 0; y < 240; y++)
-            memcpy(buffer + (y*400 + x + 40) * 3, BOT_SCREEN + (x*240 + y) * 3, 3);
-    FileSetData(filename, MAIN_BUFFER, 54 + (400 * 240 * 3 * 2), 0, true);
+    bool ret = FileSelectorWorker(result, text, path, pattern, flags, buffer);
+    free(buffer);
+    return ret;
 }

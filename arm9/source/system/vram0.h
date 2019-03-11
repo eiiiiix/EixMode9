@@ -4,11 +4,17 @@
 #include "tar.h"
 
 
+// set default font
+#ifndef DEFAULT_FONT
+#define DEFAULT_FONT           "font_default.pbm"
+#endif
+
 // known file names inside VRAM0 TAR
 #define VRAM0_AUTORUN_GM9      "autorun.gm9"
+#define VRAM0_FONT_PBM         DEFAULT_FONT
 #define VRAM0_SCRIPTS          "scripts"
-#define VRAM0_README_MD        "README.md"
-#define VRAM0_SPLASH_PCX       FLAVOR "_splash.pcx"
+#define VRAM0_README_MD        "README_internal.md"
+#define VRAM0_SPLASH_PNG       FLAVOR "_splash.png"
 
 
 #define VRAM0_OFFSET    0x18000000

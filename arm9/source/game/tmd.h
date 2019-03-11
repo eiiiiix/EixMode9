@@ -2,7 +2,7 @@
 
 #include "common.h"
 
-#define TMD_MAX_CONTENTS    255 // theme CIAs contain maximum 100 themes + 1 index content
+#define TMD_MAX_CONTENTS    1000 // 383 // theme CIAs contain maximum 100 themes + 1 index content
 
 #define TMD_SIZE_MIN        sizeof(TitleMetaData)
 #define TMD_SIZE_MAX        (sizeof(TitleMetaData) + (TMD_MAX_CONTENTS*sizeof(TmdContentChunk)))
@@ -58,6 +58,8 @@ typedef struct {
 } __attribute__((packed)) TitleMetaData;
 
 u32 ValidateTmd(TitleMetaData* tmd);
+u32 ValidateTmdSignature(TitleMetaData* tmd);
+u32 VerifyTmd(TitleMetaData* tmd);
 u32 GetTmdCtr(u8* ctr, TmdContentChunk* chunk);
 u32 FixTmdHashes(TitleMetaData* tmd);
 u32 BuildFakeTmd(TitleMetaData* tmd, u8* title_id, u32 n_contents, u32 save_size);

@@ -1,5 +1,5 @@
 /*-----------------------------------------------------------------------*/
-/* Low level disk I/O module skeleton for FatFs     (C)ChaN, 2014        */
+/* Low level disk I/O module skeleton for FatFs     (C)ChaN, d0k3, 2019  */
 /*-----------------------------------------------------------------------*/
 /* If a working storage control module is available, it should be        */
 /* attached to the FatFs via a glue function rather than modifying it.   */
@@ -7,7 +7,8 @@
 /* storage control modules to the FatFs module with a defined API.       */
 /*-----------------------------------------------------------------------*/
 
-#include "diskio.h"		/* FatFs lower layer API */
+#include "ff.h"			/* Obtains integer types */
+#include "diskio.h"		/* Declarations of disk functions */
 #include "image.h"
 #include "ramdrive.h"
 #include "nand.h"
@@ -171,18 +172,18 @@ DRESULT disk_read (
     if (type == TYPE_NONE) {
         return RES_PARERR;
     } else if (type == TYPE_SDCARD) {
-        if (sdmmc_sdcard_readsectors(sector, count, buff))
-            return RES_PARERR;
+        if (sdmmc_sdcard_readsectors(sector, count, buff) != 0)
+            return RES_ERROR;
     } else if (type == TYPE_IMAGE) {
-        if (ReadImageSectors(buff, sector, count))
-            return RES_PARERR;
+        if (ReadImageSectors(buff, sector, count) != 0)
+            return RES_ERROR;
     } else if (type == TYPE_RAMDRV) {
-        if (ReadRamDriveSectors(buff, sector, count))
-            return RES_PARERR;
+        if (ReadRamDriveSectors(buff, sector, count) != 0)
+            return RES_ERROR;
     } else {
         FATpartition* fat_info = PART_INFO(pdrv);
-        if (ReadNandSectors(buff, fat_info->offset + sector, count, fat_info->keyslot, type))
-            return RES_PARERR;
+        if (ReadNandSectors(buff, fat_info->offset + sector, count, fat_info->keyslot, type) != 0)
+            return RES_ERROR;
     }
 
 	return RES_OK;
@@ -208,18 +209,18 @@ DRESULT disk_write (
     if (type == TYPE_NONE) {
         return RES_PARERR;
     } else if (type == TYPE_SDCARD) {
-        if (sdmmc_sdcard_writesectors(sector, count, (BYTE *)buff))
-            return RES_PARERR;
+        if (sdmmc_sdcard_writesectors(sector, count, (BYTE *)buff) != 0)
+            return RES_ERROR;
     } else if (type == TYPE_IMAGE) {
-        if (WriteImageSectors(buff, sector, count))
-            return RES_PARERR;
+        if (WriteImageSectors(buff, sector, count) != 0)
+            return RES_ERROR;
     } else if (type == TYPE_RAMDRV) {
-        if (WriteRamDriveSectors(buff, sector, count))
-            return RES_PARERR;
+        if (WriteRamDriveSectors(buff, sector, count) != 0)
+            return RES_ERROR;
     } else {
         FATpartition* fat_info = PART_INFO(pdrv);
-        if (WriteNandSectors(buff, fat_info->offset + sector, count, fat_info->keyslot, type))
-            return RES_PARERR; // unstubbed!
+        if (WriteNandSectors(buff, fat_info->offset + sector, count, fat_info->keyslot, type) != 0)
+            return RES_ERROR; // unstubbed!
     }
 
 	return RES_OK;

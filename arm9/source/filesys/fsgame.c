@@ -14,8 +14,9 @@ void SetDirGoodNames(DirStruct* contents) {
         if ((GetGoodName(goodname, entry->path, false) != 0) ||
             (plen + 1 + strnlen(goodname, 256) + 1 > 256))
             continue;
-        strncpy(entry->path + plen + 1, goodname, 256 - 1 - plen - 1);
-        entry->name = entry->path + plen + 1;
+        entry->p_name = plen + 1;
+        entry->name = entry->path + entry->p_name;
+        snprintf(entry->name, 256 - entry->p_name, "%s", goodname);
     }
 }
 
@@ -36,7 +37,7 @@ bool GoodRenamer(DirEntry* entry, bool ask) {
     }
     
     char npath[256]; // get new path
-    strncpy(npath, entry->path, 256 - 1);
+    strncpy(npath, entry->path, 256);
     char* nname = strrchr(npath, '/');
     if (!nname) return false;
     nname++;

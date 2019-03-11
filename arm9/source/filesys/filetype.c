@@ -3,15 +3,21 @@
 #include "fatmbr.h"
 #include "nand.h"
 #include "game.h"
+#include "disadiff.h"
 #include "keydb.h"
 #include "ctrtransfer.h"
 #include "scripting.h"
+#include "png.h"
+#include "ui.h" // only for font file detection
 
 u64 IdentifyFileType(const char* path) {
     const u8 romfs_magic[] = { ROMFS_MAGIC };
+    const u8 diff_magic[] = { DIFF_MAGIC };
+    // const u8 disa_magic[] = { DISA_MAGIC };
     const u8 tickdb_magic[] = { TICKDB_MAGIC };
     const u8 smdh_magic[] = { SMDH_MAGIC };
     const u8 threedsx_magic[] = { THREEDSX_EXT_MAGIC };
+    const u8 png_magic[] = { PNG_MAGIC };
     
     if (!path) return 0; // safety
     u8 header[0x200] __attribute__((aligned(32))); // minimum required size
@@ -23,6 +29,7 @@ u64 IdentifyFileType(const char* path) {
     
     
     // block crappy "._" files from getting recognized as filetype
+    if (!fname) return 0;
     if (strncmp(fname, "._", 2) == 0) return 0;
     
     if (ext) ext++;
@@ -84,8 +91,10 @@ u64 IdentifyFileType(const char* path) {
             return SYS_FIRM; // FIRM file
         } else if ((ValidateAgbSaveHeader((AgbSaveHeader*) data) == 0) && (fsize >= AGBSAVE_MAX_SIZE)) {
             return SYS_AGBSAVE; // AGBSAVE file
-        } else if (memcmp(header + 0x100, tickdb_magic, sizeof(tickdb_magic)) == 0) {
-            return SYS_TICKDB; // ticket.db
+        } else if (memcmp(header + 0x100, diff_magic, sizeof(diff_magic)) == 0) { // DIFF file
+            if (memcmp(header + 0x100, tickdb_magic, sizeof(tickdb_magic)) == 0) // ticket.db file
+                return SYS_DIFF | SYS_TICKDB; // ticket.db
+            return SYS_DIFF;
         } else if (memcmp(header, smdh_magic, sizeof(smdh_magic)) == 0) {
             return GAME_SMDH; // SMDH file
         } else if (ValidateTwlHeader((TwlHeader*) data) == 0) {
@@ -94,7 +103,9 @@ u64 IdentifyFileType(const char* path) {
         }
     }
     
-    if ((fsize > sizeof(AgbHeader)) &&
+    if (GetFontFromPbm(data, fsize, NULL, NULL)) {
+        return FONT_PBM;
+    } else if ((fsize > sizeof(AgbHeader)) &&
         (ValidateAgbHeader((AgbHeader*) data) == 0)) {
         return GAME_GBA;
     } else if ((fsize > sizeof(BossHeader)) &&
@@ -105,11 +116,16 @@ u64 IdentifyFileType(const char* path) {
         return GAME_3DSX; // 3DSX (executable) file
     } else if ((fsize > sizeof(NcchInfoHeader)) &&
         (GetNcchInfoVersion((NcchInfoHeader*) data)) &&
-        fname && (strncasecmp(fname, NCCHINFO_NAME, 32) == 0)) {
+        (strncasecmp(fname, NCCHINFO_NAME, 32) == 0)) {
         return BIN_NCCHNFO; // ncchinfo.bin file
+    } else if ((strncasecmp(ext, "png", 4) == 0) &&
+        (fsize > sizeof(png_magic)) && (memcmp(data, png_magic, sizeof(png_magic)) == 0)) {
+        return GFX_PNG;
     } else if (ext && ((strncasecmp(ext, "cdn", 4) == 0) || (strncasecmp(ext, "nus", 4) == 0))) {
         char path_cetk[256];
         char* ext_cetk = path_cetk + (ext - path);
+        strncpy(path_cetk, path, 256);
+        path_cetk[255] = '\0';
         strncpy(ext_cetk, "cetk", 5);
         if (FileGetSize(path_cetk) > 0)
             return GAME_NUSCDN; // NUS/CDN type 2
@@ -125,7 +141,7 @@ u64 IdentifyFileType(const char* path) {
         u64 type = 0;
         if ((fsize <= SCRIPT_MAX_SIZE) && ext && (strncasecmp(ext, SCRIPT_EXT, strnlen(SCRIPT_EXT, 16) + 1) == 0))
             type |= TXT_SCRIPT; // should be a script (which is also generic text)
-        if (fsize < TEMP_BUFFER_SIZE) type |= TXT_GENERIC;
+        if (fsize < STD_BUFFER_SIZE) type |= TXT_GENERIC;
         return type;
     } else if ((strncmp(path + 2, "/Nintendo DSiWare/", 18) == 0) &&
         (sscanf(fname, "%08lx.bin", &id) == 1) && (strncasecmp(ext, "bin", 4) == 0)) {
@@ -137,6 +153,7 @@ u64 IdentifyFileType(const char* path) {
         char path_cdn[256];
         char* name_cdn = path_cdn + (fname - path);
         strncpy(path_cdn, path, 256);
+        path_cdn[255] = '\0';
         strncpy(name_cdn, "tmd", 4);
         if (FileGetSize(path_cdn) > 0)
             return GAME_NUSCDN; // NUS/CDN type 1

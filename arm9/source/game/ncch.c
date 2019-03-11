@@ -1,5 +1,6 @@
 #include "ncch.h"
 #include "support.h"
+#include "disadiff.h"
 #include "keydb.h"
 #include "aes.h"
 #include "sha.h"
@@ -63,8 +64,11 @@ u32 GetNcchSeed(u8* seed, NcchHeader* ncch) {
         return 0;
     }
     
+    // setup a large enough buffer
+    u8* buffer = (u8*) malloc(max(STD_BUFFER_SIZE, SEEDSAVE_AREA_SIZE));
+    if (!buffer) return 1;
+    
     // try to grab the seed from NAND database
-    const u32 seed_offset[2] = {SEEDSAVE_AREA_OFFSETS};
     const char* nand_drv[] = {"1:", "4:"}; // SysNAND and EmuNAND
     for (u32 i = 0; i < countof(nand_drv); i++) {
         UINT btr = 0;
@@ -86,41 +90,26 @@ u32 GetNcchSeed(u8* seed, NcchHeader* ncch) {
             nand_drv[i], sha256sum[0], sha256sum[1], sha256sum[2], sha256sum[3]);
             
         // check seedsave for seed
-        u8* seeddb[2];
-        seeddb[0] = (u8*) (TEMP_BUFFER + (TEMP_BUFFER_SIZE/2));
-        seeddb[1] = seeddb[0] + (SEEDSAVE_MAX_ENTRIES*(8+16));
-        if (f_open(&file, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
+        u8* seeddb = buffer;
+        if (ReadDisaDiffIvfcLvl4(path, NULL, SEEDSAVE_AREA_OFFSET, SEEDSAVE_AREA_SIZE, seeddb) != SEEDSAVE_AREA_SIZE)
             continue;
-        f_read(&file, seeddb[0], 0x200, &btr);
-        u32 p_active = (getle32(seeddb[0] + 0x168)) ? 1 : 0;
-        
-        // read both partitions
-        for (u32 p = 0; p < 2; p++) {
-            f_lseek(&file, seed_offset[(p + p_active) % 2]);
-            f_read(&file, seeddb[p], SEEDSAVE_MAX_ENTRIES*(8+16), &btr);
-        }
         
         // search for the seed
-        for (u32 p = 0; p < 2; p++) {
-            for (u32 s = 0; s < SEEDSAVE_MAX_ENTRIES; s++) {
-                if (titleId != getle64(seeddb[p] + (s*8))) continue;
-                for (u32 p0 = 0; p0 < 2; p0++) {
-                    memcpy(lseed, seeddb[(p+p0)%2] + (SEEDSAVE_MAX_ENTRIES*8) + (s*16), 16);
-                    sha_quick(sha256sum, lseed, 16 + 8, SHA256_MODE);
-                    if (hash_seed == sha256sum[0]) {
-                        memcpy(seed, lseed, 16);
-                        f_close(&file);
-                        return 0; // found!
-                    }
-                }
+        for (u32 s = 0; s < SEEDSAVE_MAX_ENTRIES; s++) {
+            if (titleId != getle64(seeddb + (s*8))) continue;
+            memcpy(lseed, seeddb + (SEEDSAVE_MAX_ENTRIES*8) + (s*16), 16);
+            sha_quick(sha256sum, lseed, 16 + 8, SHA256_MODE);
+            if (hash_seed == sha256sum[0]) {
+                memcpy(seed, lseed, 16);
+                free(buffer);
+                return 0; // found!
             }
         }
-        f_close(&file);
     }
     
     // not found -> try seeddb.bin
-    SeedInfo* seeddb = (SeedInfo*) (TEMP_BUFFER + (TEMP_BUFFER_SIZE/2));
-    size_t len = LoadSupportFile(SEEDDB_NAME, seeddb, (TEMP_BUFFER_SIZE/2)); 
+    SeedInfo* seeddb = (SeedInfo*) (void*) buffer;
+    size_t len = LoadSupportFile(SEEDDB_NAME, seeddb, STD_BUFFER_SIZE); 
     if (len && (seeddb->n_entries <= (len - 16) / 32)) { // check filesize / seeddb size
         for (u32 s = 0; s < seeddb->n_entries; s++) {
             if (titleId != seeddb->entries[s].titleId)
@@ -129,12 +118,14 @@ u32 GetNcchSeed(u8* seed, NcchHeader* ncch) {
             sha_quick(sha256sum, lseed, 16 + 8, SHA256_MODE);
             if (hash_seed == sha256sum[0]) {
                 memcpy(seed, lseed, 16);
+                free(buffer);
                 return 0; // found!
             }
         }
     }
     
     // out of options -> failed!
+    free(buffer);
     return 1;
 }
 
@@ -287,10 +278,17 @@ u32 CryptNcch(void* data, u32 offset, u32 size, NcchHeader* ncch, ExeFsHeader* e
         // exefs file handling
         if (exefs) for (u32 i = 0; i < 10; i++) {
             ExeFsFileHeader* file = exefs->files + i;
-            if (CryptNcchSection(data, offset, size,
-                (ncch->offset_exefs * NCCH_MEDIA_UNIT) + 0x200 + file->offset,
-                align(file->size, NCCH_MEDIA_UNIT), 0x200 + file->offset,
+            if (!file->size) continue;
+
+            u32 offset_file = (ncch->offset_exefs * NCCH_MEDIA_UNIT) + 0x200 + file->offset;
+            u32 size_file = file->size;
+            u32 offset_pad = offset_file + size_file;
+            u32 size_pad = align(size_file, NCCH_MEDIA_UNIT) - size_file;
+
+            if (CryptNcchSection(data, offset, size, offset_file, size_file, 0x200 + file->offset,
                 ncch, 2, crypt_to, EXEFS_KEYID(file->name)) != 0) return 1;
+            if (CryptNcchSection(data, offset, size, offset_pad, size_pad, 0x200 + file->offset + file->size,
+                ncch, 2, crypt_to, 0) != 0) return 1;
         }
     }
     

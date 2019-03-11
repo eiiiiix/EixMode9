@@ -11,6 +11,7 @@
 #include "rtc.h"
 #include "hid.h"
 #include "ui.h"
+#include "memmap.h"
 
 #include <arm.h>
 
@@ -42,7 +43,6 @@ const char *XRQ_Name[] = {
     "Data Abort", "Reserved", "IRQ", "FIQ"
 };
 
-extern char __stack_top;
 
 void XRQ_DumpRegisters(u32 xrq, u32 *regs)
 {
@@ -54,7 +54,8 @@ void XRQ_DumpRegisters(u32 xrq, u32 *regs)
 
     /* Dump registers */
     wstr += sprintf(wstr, "Exception: %s (%lu)\n", XRQ_Name[xrq&7], xrq);
-    wstr += sprintf(wstr, "20%02lX-%02lX-%02lX %02lX:%02lX:%02lX\n\n",
+    wstr += sprintf(wstr, FLAVOR " " VERSION "\n");
+    wstr += sprintf(wstr, "20%02lX-%02lX-%02lX %02lX:%02lX:%02lX\n \n",
         (u32) dstime.bcd_Y, (u32) dstime.bcd_M, (u32) dstime.bcd_D,
         (u32) dstime.bcd_h, (u32) dstime.bcd_m, (u32) dstime.bcd_s);
     for (int i = 0; i < 8; i++) {
@@ -77,7 +78,7 @@ void XRQ_DumpRegisters(u32 xrq, u32 *regs)
 
     /* Dump STACK */
     sp = regs[13] & ~0xF;
-    st = (u32)&__stack_top;
+    st = __STACK_TOP;
     wstr += sprintf(wstr, "Stack dump:\n");
     wstr += XRQ_DumpData_u8(wstr, sp, min(sp+SP_DUMPLEN, st));
     wstr += sprintf(wstr, "\n");

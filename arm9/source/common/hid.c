@@ -1,7 +1,8 @@
 #include "hid.h"
 #include "i2c.h"
 #include "timer.h"
-#include "power.h"
+#include "power.h" // for brightness slider
+#include "screenshot.h" // for screenshots
 
 u32 InputWait(u32 timeout_sec) {
     static u64 delay = 0;
@@ -42,8 +43,11 @@ u32 InputWait(u32 timeout_sec) {
         // make sure the key is pressed
         u32 t_pressed = 0;
         for(; (t_pressed < 0x13000) && (pad_state == HID_STATE); t_pressed++);
-        if (t_pressed >= 0x13000)
+        if (t_pressed >= 0x13000) {
+            if ((pad_state & BUTTON_ANY) == (BUTTON_R1 | BUTTON_L1))
+                CreateScreenshot(); // screenshot handling
             return pad_state;
+        }
     }
 }
 
@@ -51,4 +55,25 @@ bool CheckButton(u32 button) {
     u32 t_pressed = 0;
     for(; (t_pressed < 0x13000) && ((HID_STATE & button) == button); t_pressed++);
     return (t_pressed >= 0x13000);
+}
+
+void ButtonToString(u32 button, char* str) {
+    const char* strings[] = { BUTTON_STRINGS };
+
+    *str = '\0';
+    if (button) {
+        u32 b = 0;
+        for (b = 0; !((button>>b)&0x1); b++);
+        if (b < countof(strings)) strcpy(str, strings[b]);
+    }
+}
+
+u32 StringToButton(char* str) {
+    const char* strings[] = { BUTTON_STRINGS };
+
+    u32 b = 0;
+    for (b = 0; b < countof(strings); b++)
+        if (strcmp(str, strings[b]) == 0) break;
+
+    return (b == countof(strings)) ? 0 : 1<<b;
 }

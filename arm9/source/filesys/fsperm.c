@@ -3,13 +3,15 @@
 #include "virtual.h"
 #include "image.h"
 #include "unittype.h"
+#include "essentials.h"
 #include "ui.h"
+#include "sdmmc.h"
 
 #define PATH_SYS_LVL1   "S:/twln.bin", "S:/twlp.bin" 
 #define PATH_SYS_LVL2   "1:/rw/sys/LocalFriendCodeSeed_B", "1:/rw/sys/LocalFriendCodeSeed_A", \
                         "1:/rw/sys/SecureInfo_A", "1:/rw/sys/SecureInfo_B", \
                         "1:/private/movable.sed", "1:/ro/sys/HWCAL0.dat", "1:/ro/sys/HWCAL1.dat", \
-                        "S:/ctrnand_fat.bin", "S:/ctrnand_full.bin"
+                        "S:/ctrnand_fat.bin", "S:/ctrnand_full.bin", "S:/" ESSENTIAL_NAME
 #define PATH_SYS_LVL3   "S:/firm0.bin", "S:/firm1.bin", "S:/nand.bin", "S:/nand_minsize.bin", "S:/nand_hdr.bin", \
                         "S:/sector0x96.bin", "S:/twlmbr.bin"
 #define PATH_EMU_LVL1   "E:/ctrnand_fat.bin", "E:/ctrnand_full.bin", "E:/nand.bin", "E:/nand_minsize.bin", "E:/nand_hdr.bin"
@@ -25,6 +27,12 @@ bool CheckWritePermissions(const char* path) {
     // check mounted image write permissions
     if ((drvtype & DRV_IMAGE) && !CheckWritePermissions(GetMountPath()))
         return false; // endless loop when mounted file inside image, but not possible
+    
+    // SD card write protection check
+    if ((drvtype & (DRV_SDCARD | DRV_EMUNAND | DRV_ALIAS)) && SD_WRITE_PROTECTED) {
+        ShowPrompt(false, "SD card is write protected!\nCan't continue.");
+        return false;
+    }
     
     // check drive type, get permission type
     if (drvtype & DRV_SYSNAND) {

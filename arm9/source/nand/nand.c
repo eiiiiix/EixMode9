@@ -6,6 +6,7 @@
 #include "fatmbr.h"
 #include "sdmmc.h"
 #include "image.h"
+#include "memmap.h"
 
 
 #define KEY95_SHA256    ((IS_DEVKIT) ? slot0x11Key95dev_sha256 : slot0x11Key95_sha256)
@@ -87,7 +88,7 @@ bool InitNandCrypto(bool init_full)
     // on a9lh this MUST be run before accessing the SHA register in any other way
     if (IS_UNLOCKED) { // if OTP is unlocked
         // see: https://www.3dbrew.org/wiki/OTP_Registers
-        sha_quick(OtpSha256, (u8*) 0x10012000, 0x90, SHA256_MODE);
+        sha_quick(OtpSha256, (u8*) __OTP_ADDR, 0x90, SHA256_MODE);
         Crypto0x96 = true; // valid 100% in that case, others need checking
     } else if (IS_A9LH) { // for a9lh
         // store the current SHA256 from register
@@ -116,7 +117,7 @@ bool InitNandCrypto(bool init_full)
     if (GetNandPartitionInfo(NULL, NP_TYPE_FAT, NP_SUBTYPE_TWL, 0, NAND_SYSNAND) != 0) {
         u64 TwlCustId = 0; // TWL customer ID (different for devkits)
         if (!IS_DEVKIT) TwlCustId = 0x80000000ULL | (*(vu64 *)0x01FFB808 ^ 0x8C267B7B358A6AFULL);
-        else if (IS_UNLOCKED) TwlCustId = (*(vu64*)0x10012000);
+        else if (IS_UNLOCKED) TwlCustId = (*(vu64*)__OTP_ADDR);
         if (!TwlCustId && IS_DEVKIT) {
             u64 __attribute__((aligned(32))) otp0x10[2];
             if (GetOtp0x90(otp0x10, 0x10)) TwlCustId = *otp0x10;
@@ -352,32 +353,32 @@ int ReadNandSectors(void* buffer, u32 sector, u32 count, u32 keyslot, u32 nand_s
 
 int WriteNandSectors(const void* buffer, u32 sector, u32 count, u32 keyslot, u32 nand_dst)
 {
-    u8* buffer8 = (u8*) buffer;
     // buffer must not be changed, so this is a little complicated
-    for (u32 s = 0; s < count; s += (NAND_BUFFER_SIZE / 0x200)) {
-        u32 pcount = min((NAND_BUFFER_SIZE/0x200), (count - s));
-        memcpy(NAND_BUFFER, buffer8 + (s*0x200), pcount * 0x200);
-        if ((keyslot == 0x11) && (sector == SECTOR_SECRET)) CryptSector0x96(NAND_BUFFER, true);
-        else if (keyslot < 0x40) CryptNand(NAND_BUFFER, sector + s, pcount, keyslot);
+    void* nand_buffer = (void*) malloc(min(STD_BUFFER_SIZE, count * 0x200));
+    if (!nand_buffer) return -1;
+    int errorcode = 0;
+    
+    for (u32 s = 0; s < count; s += (STD_BUFFER_SIZE / 0x200)) {
+        u32 pcount = min((STD_BUFFER_SIZE/0x200), (count - s));
+        memcpy(nand_buffer, ((u8*) buffer) + (s*0x200), pcount * 0x200);
+        if ((keyslot == 0x11) && (sector == SECTOR_SECRET)) CryptSector0x96(nand_buffer, true);
+        else if (keyslot < 0x40) CryptNand(nand_buffer, sector + s, pcount, keyslot);
         if (nand_dst == NAND_EMUNAND) {
-            int errorcode = 0;
             if ((sector + s == 0) && (emunand_base_sector % 0x200000 == 0)) { // GW EmuNAND header handling
-                errorcode = sdmmc_sdcard_writesectors(emunand_base_sector + getMMCDevice(0)->total_size, 1, NAND_BUFFER);
-                errorcode = (!errorcode && (pcount > 1)) ? sdmmc_sdcard_writesectors(emunand_base_sector + 1, pcount - 1, NAND_BUFFER + 0x200) : errorcode;
-            } else errorcode = sdmmc_sdcard_writesectors(emunand_base_sector + sector + s, pcount, NAND_BUFFER);
-            if (errorcode) return errorcode;
+                errorcode = sdmmc_sdcard_writesectors(emunand_base_sector + getMMCDevice(0)->total_size, 1, nand_buffer);
+                if (!errorcode && (pcount > 1)) errorcode = sdmmc_sdcard_writesectors(emunand_base_sector + 1, pcount - 1, ((u8*) nand_buffer) + 0x200);
+            } else errorcode = sdmmc_sdcard_writesectors(emunand_base_sector + sector + s, pcount, nand_buffer);
         } else if (nand_dst == NAND_IMGNAND) {
-            int errorcode = WriteImageSectors(NAND_BUFFER, sector + s, pcount);
-            if (errorcode) return errorcode;
+            errorcode = WriteImageSectors(nand_buffer, sector + s, pcount);
         } else if (nand_dst == NAND_SYSNAND) {
-            int errorcode = sdmmc_nand_writesectors(sector + s, pcount, NAND_BUFFER);
-            if (errorcode) return errorcode;
+            errorcode = sdmmc_nand_writesectors(sector + s, pcount, nand_buffer);
         } else {
-            return -1;
+            errorcode = -1;
         }
     }
     
-    return 0;
+    free(nand_buffer);
+    return errorcode;
 }
 
 u32 ValidateSecretSector(u8* sector)
@@ -568,9 +569,14 @@ u32 AutoEmuNandBase(bool reset)
         }
     }
     
-    emunand_base_sector = 0x000000; // GW type EmuNAND
-    if (GetNandPartitionInfo(NULL, NP_TYPE_NCSD, NP_SUBTYPE_CTR, 0, NAND_EMUNAND) != 0)
-        emunand_base_sector = 0x000001; // RedNAND type EmuNAND
+    emunand_base_sector = 0x000001; // RedNAND type EmuNAND, default
+    if (GetNandPartitionInfo(NULL, NP_TYPE_NCSD, NP_SUBTYPE_CTR, 0, NAND_EMUNAND) != 0) {
+        emunand_base_sector = 0x000000; // GW type EmuNAND
+        if (!GetNandSizeSectors(NAND_EMUNAND) || // make sure this is no false positive
+            (GetNandPartitionInfo(NULL, NP_TYPE_NCSD, NP_SUBTYPE_CTR, 0, NAND_EMUNAND) != 0))
+            // still nothing found? revert to default (RedNAND offset)
+            emunand_base_sector = 0x000001;
+    }
     
     return emunand_base_sector;
 }

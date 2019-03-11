@@ -66,13 +66,14 @@ Help Wanted
 *I need testers for this, if you want to help test Private
 Builds then contact me
 *Email: eixxhis@gmail.com
-*Discord: Megumin (Eix)#9950
+*Discord: Gemo#2004 (prob wont change)
 *GBAtemp: Eix
 
 ###
 Testers
 *SSQ
 *NicoAICP
+*SirNapkin1334
 
 ###
 Big contributers
@@ -83,7 +84,7 @@ Special Thanks:
 CrimsonMaple x15
 d0k3 xToo big of a number :P
 Kazuma77 x3
-Ronan x50
+Ronan x356 (He *donated* a 3ds)
 Braiam x1
 VinsCool x1
 TheFIrstAv3ngerx1
@@ -92,51 +93,7 @@ Lilith Valentine x6
 NicoAICP x5
 SirNapkin1334 x999
 
-###
-Why ReiSix?
-Okay, so here's a crappy explanation/ranking based on features.
-
-Each feature is worth 1 point
-Availible/Not needed=1
-Not a feature=0
-In-between/else=0.5
-C is for the casual section, non casual section, and joke section
-N is for the non casual section, and joke section
-                                    (ReiSix, Luma3ds, CakesFW, ReiNand)
-C1. Supports NTR overlay/SVC backdoor: yes, yes, yes, no
-N2. Supports IPS patching: sorta, yes, sorta, sorta
-C3. Has built in chainloader: no, yes but it messes with the b9s enviroment, no, no
-N4. Has a config: doesnt need one, yes, yes, doesnt need one
-N5. Supports CTRNAND booting (boot.firm in ctrnand): yes but supposedly buggy, yes, idk, no
-N6. Can mount a CTRNAND thats missing its native firm: yes, no, yes, yes
-N7. Supports emunand: yes, yes but still uses some stuff from sysnand, yes, yes
-N8. Supports dev unit apps: sorta, yes, idk never tried, yes
-N9. Supports patches that can modify system processes: yes, sorta, yes, yes
-C10. Can be drag-and-dropped with no need to know what your doing: yes, yes, somewhat, yes
-
-ReiSix score: N7.5 C2
-Luma3ds score: N7 (Mass Effect!) C2.5
-CakesFW score: N7 (Mass Effect!) C1.5
-ReiNand score: N6.5 C1
-
-for non casual users ReiSix is the best option
-and EixMode9 is meant for power users (IE: non casual users)
-while all the scores are very close, they are not 100% correct, if you are an advanced user or know what your doing the CakesFW can be the best option here (unless you use Corbenik)
-Luma3ds has the best score for casual users because it has all the stuff that a noob wants or that someone who doesnt want to do too much wants
-ReiNand may have the lowest overall score, but it is insanely useful
-
-these scores are meant for the broadest possible results
-going on what i would give for my personal use it would be as follows
-
-because you are not Eix (unless you are Eix) these results do not apply to you
-personal results are for an individual and what xhe uses it for
-
-ReiSix: 8.5
-Luma3ds: 4
-CakesFW: 7 (Mass Effect!)
-ReiNand: 8
-
-if you do not want to have ReiSix in the vram then download the source and delete ~/data/rei and ~/data/ReiSix_1.1.firm
+if you do not want to have ReiSix in the vram then download the source and delete ~/data/rei and ~/data/ReiSix_1.2.firm
 it will save ~2mb that you can use for other stuff
 like the cfw of your choice if it fits
 or support files

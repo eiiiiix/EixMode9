@@ -2,6 +2,7 @@
 #include "fsgame.h"
 #include "fsinit.h"
 #include "virtual.h"
+#include "vcart.h"
 #include "sddata.h"
 #include "image.h"
 #include "ui.h"
@@ -66,9 +67,15 @@ int DriveType(const char* path) {
 void SetFSSearch(const char* pattern, const char* path, bool mode) {
     if (pattern && path) {
         strncpy(search_pattern, pattern, 256);
+        search_pattern[255] = '\0';
         strncpy(search_path, path, 256);
+        search_path[255] = '\0';
         search_title_mode = mode;
     } else *search_pattern = *search_path = '\0';
+}
+
+bool GetFATVolumeLabel(const char* drv, char* label) {
+    return (f_getlabel(drv, label, NULL) == FR_OK);
 }
 
 bool GetRootDirContentsWorker(DirStruct* contents) {
@@ -76,19 +83,28 @@ bool GetRootDirContentsWorker(DirStruct* contents) {
     static const char* drvnum[] = { FS_DRVNUM };
     u32 n_entries = 0;
     
+    char sdlabel[16];
+    if (!GetFATVolumeLabel("0:", sdlabel))
+        snprintf(sdlabel, 16, "NOLABEL");
+
+    char carttype[16];
+    GetVCartTypeString(carttype);
+    
     // virtual root objects hacked in
     for (u32 i = 0; (i < NORM_FS+VIRT_FS) && (n_entries < MAX_DIR_ENTRIES); i++) {
         DirEntry* entry = &(contents->entry[n_entries]);
         if (!DriveType(drvnum[i])) continue; // drive not available
+        entry->p_name = 4;
+        entry->name = entry->path + entry->p_name;
         memset(entry->path, 0x00, 64);
-        snprintf(entry->path + 0,  4, drvnum[i]);
+        snprintf(entry->path,  4, "%s", drvnum[i]);
         if ((*(drvnum[i]) >= '7') && (*(drvnum[i]) <= '9') && !(GetMountState() & IMG_NAND)) // Drive 7...9 handling
-            snprintf(entry->path + 4, 32, "[%s] %s", drvnum[i],
+            snprintf(entry->name, 32, "[%s] %s", drvnum[i],
                 (*(drvnum[i]) == '7') ? "FAT IMAGE" :
                 (*(drvnum[i]) == '8') ? "BONUS DRIVE" :
                 (*(drvnum[i]) == '9') ? "RAMDRIVE" : "UNK");
         else if (*(drvnum[i]) == 'G') // Game drive special handling
-            snprintf(entry->path + 4, 32, "[%s] %s %s", drvnum[i],
+            snprintf(entry->name, 32, "[%s] %s %s", drvnum[i],
                 (GetMountState() & GAME_CIA  ) ? "CIA"   :
                 (GetMountState() & GAME_NCSD ) ? "NCSD"  :
                 (GetMountState() & GAME_NCCH ) ? "NCCH"  :
@@ -97,8 +113,11 @@ bool GetRootDirContentsWorker(DirStruct* contents) {
                 (GetMountState() & GAME_NDS  ) ? "NDS"   :
                 (GetMountState() & SYS_FIRM  ) ? "FIRM"  :
                 (GetMountState() & GAME_TAD  ) ? "DSIWARE" : "UNK", drvname[i]);
-        else snprintf(entry->path + 4, 32, "[%s] %s", drvnum[i], drvname[i]);
-        entry->name = entry->path + 4;
+        else if (*(drvnum[i]) == 'C') // Game cart handling
+            snprintf(entry->name, 32, "[%s] %s (%s)", drvnum[i], drvname[i], carttype);
+        else if (*(drvnum[i]) == '0') // SD card handling
+            snprintf(entry->name, 32, "[%s] %s (%s)", drvnum[i], drvname[i], sdlabel);
+        else snprintf(entry->name, 32, "[%s] %s", drvnum[i], drvname[i]);
         entry->size = GetTotalSpace(entry->path);
         entry->type = T_ROOT;
         entry->marked = 0;
@@ -117,7 +136,7 @@ bool GetDirContentsWorker(DirStruct* contents, char* fpath, int fnsize, const ch
     
     if (fvx_opendir(&pdir, fpath) != FR_OK)
         return false;
-    (fname++)[0] = '/';
+    if (*(fname-1) != '/') *(fname++) = '/';
     
     while (fvx_readdir(&pdir, &fno) == FR_OK) {
         if ((strncmp(fno.fname, ".", 2) == 0) || (strncmp(fno.fname, "..", 3) == 0))
@@ -129,7 +148,9 @@ bool GetDirContentsWorker(DirStruct* contents, char* fpath, int fnsize, const ch
         } else if (!pattern || (fvx_match_name(fname, pattern) == FR_OK)) {
             DirEntry* entry = &(contents->entry[contents->n_entries]);
             strncpy(entry->path, fpath, 256);
-            entry->name = entry->path + (fname - fpath);
+            entry->path[255] = '\0';
+            entry->p_name = fname - fpath;
+            entry->name = entry->path + entry->p_name;
             if (fno.fattrib & AM_DIR) {
                 entry->type = T_DIR;
                 entry->size = 0;
@@ -138,12 +159,12 @@ bool GetDirContentsWorker(DirStruct* contents, char* fpath, int fnsize, const ch
                 entry->size = fno.fsize;
             }
             entry->marked = 0;
-            if (contents->n_entries >= MAX_DIR_ENTRIES) {
-                ret = true; // Too many entries, still okay
-                break;
+            if (!recursive || (entry->type != T_DIR)) {
+                if (++(contents->n_entries) >= MAX_DIR_ENTRIES) {
+                    ret = true; // Too many entries, still okay if we stop here
+                    break;
+                }
             }
-            if (!recursive || (entry->type != T_DIR)) 
-                contents->n_entries++;
         }
         if (recursive && (fno.fattrib & AM_DIR)) {
             if (!GetDirContentsWorker(contents, fpath, fnsize, pattern, recursive))
@@ -162,15 +183,18 @@ void SearchDirContents(DirStruct* contents, const char* path, const char* patter
             contents->n_entries = 0; // not required, but so what?
     } else {
         // create virtual '..' entry
-        contents->entry->name = contents->entry->path + 8;
-        strncpy(contents->entry->path, "*?*?*", 8);
-        strncpy(contents->entry->name, "..", 4);
-        contents->entry->type = T_DOTDOT;
-        contents->entry->size = 0;
+        DirEntry* entry = (DirEntry*) &(contents->entry);
+        entry->p_name = 4;
+        entry->name = entry->path + entry->p_name;
+        strncpy(entry->path, "*?*", 4);
+        strncpy(entry->name, "..", 4);
+        entry->type = T_DOTDOT;
+        entry->size = 0;
         contents->n_entries = 1;
         // search the path
         char fpath[256]; // 256 is the maximum length of a full path
         strncpy(fpath, path, 256);
+        fpath[255] = '\0';
         if (!GetDirContentsWorker(contents, fpath, 256, pattern, recursive))
             contents->n_entries = 0;
     }

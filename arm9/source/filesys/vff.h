@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "sddata.h"
 #include "ff.h"
 
 #define AM_VRT 0x40 // Virtual (FILINFO FAT attribute)
@@ -31,6 +32,9 @@ FRESULT fvx_readdir (DIR* dp, FILINFO* fno);
 // additional quick read / write functions
 FRESULT fvx_qread (const TCHAR* path, void* buff, FSIZE_t ofs, UINT btr, UINT* br);
 FRESULT fvx_qwrite (const TCHAR* path, const void* buff, FSIZE_t ofs, UINT btw, UINT* bw);
+
+// additional quick file info functions
+FSIZE_t fvx_qsize (const TCHAR* path);
 
 // additional recursive functions
 FRESULT fvx_rmkdir (const TCHAR* path);

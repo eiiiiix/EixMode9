@@ -7,7 +7,7 @@
 #include "ncch.h"
 #include "ncsd.h"
 
-#define CART_INSERTED (!(REG_CARDCONF2 & 0x1))
+#define CART_INSERTED (!(REG_CARDSTATUS & 0x1))
 
 typedef struct {
     NcsdHeader ncsd;
@@ -24,7 +24,7 @@ typedef struct {
     u64 cart_size;
     u64 data_size;
     u32 unused_offset;
-} __attribute__((packed)) CartDataCtr;
+} __attribute__((packed, aligned(16))) CartDataCtr;
 
 typedef struct {
     TwlHeader ntr_header;
@@ -38,7 +38,7 @@ typedef struct {
     u64 cart_size;
     u64 data_size;
     u32 arm9i_rom_offset;
-} __attribute__((packed)) CartDataNtrTwl;
+} __attribute__((packed, aligned(16))) CartDataNtrTwl;
 
 u32 GetCartName(char* name, CartData* cdata) {
     if (cdata->cart_type & CART_CTR) {
@@ -72,8 +72,8 @@ u32 InitCardRead(CartData* cdata) {
         Cart_Secure_Init((u32*) (void*) ncch_header, sec_keys);
         
         // NCSD header and CINFO
-        Cart_Dummy();
-        Cart_Dummy();
+        // Cart_Dummy();
+        // Cart_Dummy();
         CTR_CmdReadData(0, 0x200, 8, cdata->header);
         
         // safety checks, cart size
@@ -140,13 +140,19 @@ u32 ReadCartSectors(void* buffer, u32 sector, u32 count, CartData* cdata) {
     if (!count) return 0;
     // actual cart reads
     if (cdata->cart_type & CART_CTR) {
-        Cart_Dummy();
-        Cart_Dummy();
-        CTR_CmdReadData(sector, 0x200, count, buffer8);
+        // don't read more than 1MB at once
+        const u32 max_read = 0x800;
+        u8* buff = buffer8;
+        for (u32 i = 0; i < count; i += max_read) {
+            // Cart_Dummy();
+            // Cart_Dummy();
+            CTR_CmdReadData(sector + i, 0x200, min(max_read, count - i), buff);
+            buff += max_read * 0x200;
+        }
         // overwrite the card2 savegame with 0xFF
         u32 card2_offset = getle32(cdata->header + 0x200);
         if ((card2_offset != 0xFFFFFFFF) &&
-            (card2_offset >= cdata->data_size) &&
+            ((card2_offset * 0x200) >= cdata->data_size) &&
             (sector + count > card2_offset)) {
             if (sector > card2_offset)
                 memset(buffer8, 0xFF, (count * 0x200));

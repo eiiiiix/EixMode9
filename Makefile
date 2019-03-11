@@ -17,16 +17,22 @@ export RELDIR := release
 # Definitions for initial RAM disk
 VRAM_OUT    := $(OUTDIR)/vram0.tar
 VRAM_DATA   := data
-VRAM_FLAGS  := --format=v7 --blocking-factor=1 --xform='s/^$(VRAM_DATA)\/\|^resources\///'
+VRAM_FLAGS  := --make-new --path-limit 99 --size-limit 3145728
+
+ifeq ($(OS),Windows_NT)
+    PY3 := py -3
+else
+    PY3 := python3
+endif
 
 # Definitions for ARM binaries
 export INCLUDE := -I"$(shell pwd)/common"
 
 export ASFLAGS := -g -x assembler-with-cpp $(INCLUDE)
 export CFLAGS  := -DDBUILTS="\"$(DBUILTS)\"" -DDBUILTL="\"$(DBUILTL)\"" -DVERSION="\"$(VERSION)\"" -DFLAVOR="\"$(FLAVOR)\"" \
-                  -g -O2 -Wall -Wextra -Wpedantic -Wcast-align -Wno-main \
+                  -g -O2 -Wall -Wextra -Wpedantic -Wcast-align -Wformat=2 -Wno-main \
                   -fomit-frame-pointer -ffast-math -std=gnu11 \
-                  -Wno-unused-function $(INCLUDE)
+                  -Wno-unused-function -Wno-format-truncation $(INCLUDE) -ffunction-sections -fdata-sections
 export LDFLAGS := -Tlink.ld -nostartfiles -Wl,--gc-sections,-z,max-page-size=512
 ELF := arm9/arm9.elf arm11/arm11.elf
 
@@ -39,8 +45,8 @@ clean:
 	done
 	@rm -rf $(OUTDIR) $(RELDIR) $(FIRM) $(FIRMD) $(VRAM_OUT)
 	@echo "Done!"
-	@echo "Make sure to join my Discord server!"
-	@echo "https://discord.gg/fQ8PFHR"
+	@echo "Make sure to join my friends Discord Server!"
+	@echo "https://discord.gg/4VSAYcx"
 
 release: clean
 	@$(MAKE) --no-print-directory firm
@@ -52,21 +58,24 @@ release: clean
 
 	@cp $(FIRM) $(RELDIR)
 	@cp $(OUTDIR)/$(FLAVOR)_ntr.firm $(RELDIR)/ntrboot/
+	@cp $(OUTDIR)/$(FLAVOR)_ntr.firm.sha $(RELDIR)/ntrboot/
 	@cp $(OUTDIR)/$(FLAVOR)_ntr_dev.firm $(RELDIR)/ntrboot/
+	@cp $(OUTDIR)/$(FLAVOR)_ntr_dev.firm.sha $(RELDIR)/ntrboot/
 	@cp $(OUTDIR)/$(FLAVOR).firm $(RELDIR)/
+	@cp $(OUTDIR)/$(FLAVOR).firm.sha $(RELDIR)/
 	@cp $(OUTDIR)/$(FLAVOR)_dev.firm $(RELDIR)/
+	@cp $(OUTDIR)/$(FLAVOR)_dev.firm.sha $(RELDIR)/
 	@cp $(ELF) $(RELDIR)/elf
 	@cp $(CURDIR)/README.md $(RELDIR)
-	@cp $(CURDIR)/HelloScript.gm9 $(RELDIR)
 	@cp -R $(CURDIR)/resources/em9 $(RELDIR)/em9
-	@cp -R $(CURDIR)/resources/download_support.sh $(RELDIR)/download_support.sh
+	@cp -R $(CURDIR)/resources/sample $(RELDIR)/sample
 
 	@-7za a $(RELDIR)/$(FLAVOR)-$(VERSION)-$(DBUILTS).zip ./$(RELDIR)/*
 
 vram0:
 	@mkdir -p "$(OUTDIR)"
 	@echo "Creating $(VRAM_OUT)"
-	@tar cf $(VRAM_OUT) $(VRAM_FLAGS) $(shell ls -d $(README) $(SPLASH) $(VRAM_DATA)/*)
+	@$(PY3) utils/add2tar.py $(VRAM_FLAGS) $(VRAM_OUT) $(shell ls -d $(SPLASH) $(OVERRIDE_FONT) $(VRAM_DATA)/*)
 
 %.elf: .FORCE
 	@echo "Building $@"
@@ -75,10 +84,12 @@ vram0:
 firm: $(ELF) vram0
 	@test `wc -c <$(VRAM_OUT)` -le 3145728
 	@mkdir -p $(call dirname,"$(FIRM)") $(call dirname,"$(FIRMD)")
-	firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
-	firmtool build $(FIRMD) $(FTDFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT)  -C NDMA XDMA memcpy
-	@echo "Done!"
-	@echo "Make sure to join my Discord server!"
-	@echo "https://discord.gg/fQ8PFHR"
+	@echo "[FLAVOR] $(FLAVOR)"
+	@echo "[VERSION] $(VERSION)"
+	@echo "[BUILD] $(DBUILTL)"
+	@echo "[FIRM] $(FIRM)"
+	@firmtool build $(FIRM) $(FTFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT) -C NDMA XDMA memcpy
+	@echo "[FIRM] $(FIRMD)"
+	@firmtool build $(FIRMD) $(FTDFLAGS) -g -A 0x18000000 -D $(ELF) $(VRAM_OUT)  -C NDMA XDMA memcpy
 
 .FORCE:
