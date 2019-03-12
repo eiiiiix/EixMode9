@@ -2012,8 +2012,6 @@ u32 HomeMoreMenu(char* current_path) {
         user_select = (n_opt > 1) ? ShowSelectPrompt(n_opt, optionstr, promptstr) : n_opt;
         if (user_select > 0) {
             InjectHealthAndSafety(NULL, (user_select == sys) ? "1:" : "4:");
-           if (user_select > 0) {
-           InjectHealthAndSafety(NULL, (user_select == sys) ? "1:" : "4:");
            GetDirContents(current_dir, current_path);
            return 0;
            }

@@ -43,7 +43,6 @@ clean:
 	@set -e; for elf in $(ELF); do \
 	    $(MAKE) --no-print-directory -C $$(dirname $$elf) clean; \
 	done
-	@rm -rf $(OUTDIR) $(RELDIR) $(FIRM) $(FIRMD) $(VRAM_OUT)
 	@echo "Done!"
 	@echo "Make sure to join my friends Discord Server!"
 	@echo "https://discord.gg/4VSAYcx"

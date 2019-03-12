@@ -6,7 +6,7 @@ rwildcard = $(foreach d, $(wildcard $1*), \
             $(call rwildcard, $d/, $2))
 
 FLAVOR  ?=  EixMode9
-SPLASH   =  resources/$(FLAVOR)_splash.png
+SPLASH   =  resources/EixMode9_splash.pcx
 
 ifeq ($(FLAVOR),SafeMode9)
     CFLAGS += -DSAFEMODE

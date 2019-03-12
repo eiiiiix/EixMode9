@@ -2249,7 +2249,7 @@ u32 GetARGamesPaths(const char* drv, char* path_cxi, char* path_bak) {
     if (path_cxi) *path_cxi = '\0';
     if (path_bak) *path_bak = '\0';
     for (u32 i = 0; i < 8; i++) { // 8 is an arbitrary number
-        TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
+    TitleMetaData* tmd = (TitleMetaData*) malloc(TMD_SIZE_MAX);
         TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
         char path_tmd[64];
         snprintf(path_tmd, 64, "%s/title/00040010/%08lx/content/%08lx.tmd", drv, tidlow_ar, i);
@@ -2365,7 +2365,7 @@ u32 GetHMPaths(const char* drv, char* path_cxi, char* path_bak) {
     if (path_cxi) *path_cxi = '\0';
     if (path_bak) *path_bak = '\0';
     for (u32 i = 0; i < 8; i++) { // 8 is an arbitrary number
-        TitleMetaData* tmd = (TitleMetaData*) TEMP_BUFFER;
+    TitleMetaData* tmd = (TitleMetaData*) malloc(TMD_SIZE_MAX);
         TmdContentChunk* chunk = (TmdContentChunk*) (tmd + 1);
         char path_tmd[64];
         snprintf(path_tmd, 64, "%s/title/00040030/%08lx/content/%08lx.tmd", drv, tidlow_hm, i);
