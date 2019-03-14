@@ -15,7 +15,7 @@ void CreateScreenshot() {
 
     fvx_rmkdir(OUTPUT_PATH);
     get_dstime(&dstime);
-    snprintf(filename, 64, OUTPUT_PATH "/snap_%02X%02X%02X%02X%02X%02X.png",
+    snprintf(filename, 64, "em9/scrn/snap_%02X%02X%02X%02X%02X%02X.png",
         dstime.bcd_Y, dstime.bcd_M, dstime.bcd_D,
         dstime.bcd_h, dstime.bcd_m, dstime.bcd_s);
 

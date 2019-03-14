@@ -61,8 +61,7 @@
 #define FTYPE_ISDISADIFF(tp)    (tp&(SYS_DIFF|SYS_DISA))
 #define FTYPE_RESTORABLE(tp)    (tp&(IMG_NAND))
 #define FTYPE_EBACKUP(tp)       (tp&(IMG_NAND))
-// #define FTYPE_XORPAD(tp)        (tp&(BIN_NCCHNFO)) // deprecated
-#define FTYPE_XORPAD(tp)        0
+#define FTYPE_XORPAD(tp)        (tp&(BIN_NCCHNFO)) // deprecated
 #define FTYPE_KEYINIT(tp)       (tp&(BIN_KEYDB))
 #define FTYPE_KEYINSTALL(tp)    (tp&(BIN_KEYDB))
 #define FTYPE_SCRIPT(tp)        (tp&(TXT_SCRIPT))

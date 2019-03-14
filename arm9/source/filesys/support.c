@@ -4,7 +4,7 @@
 #include "vff.h"
 
 #define SUPPORT_FILE_PATHS  "0:/em9/support", "1:/rw/em9/support", "0:/gm9/support", "1:/gm9/support", "1:/rw/gm9/support"//, "4:/support" // we also check the VRAM TAR first
-#define SUPPORT_DIR_PATHS   "V:", "0:/em9", "1:/rw/em9", "0:/gm9", "1:/gm9", "1:/rw/gm9"//, "4:/support" // converting my emunand to storage that i cant accidentally delete
+#define SUPPORT_DIR_PATHS   "V:/support", "0:/em9", "1:/rw/em9", "0:/gm9", "1:/gm9", "1:/rw/gm9"//, "4:/support" // converting my emunand to storage that i cant accidentally delete
 
 
 bool CheckSupportFile(const char* fname)
